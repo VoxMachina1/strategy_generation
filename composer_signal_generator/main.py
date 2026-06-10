@@ -42,6 +42,7 @@ except ImportError:
 
 # Combo analysis modules are now built-in (single-file solution)
 COMBO_MODULES_AVAILABLE = True
+MAX_WORKERS = 5  # configurable via startup prompt; lower values reduce RAM usage
 
 # Extend quantstats periodically
 qs.extend_pandas()
@@ -2257,7 +2258,7 @@ def evaluate_signal_performance(signal_returns, benchmark_returns=None, mode="OO
     return metrics
 
 # === FULLY CORRECTED AND FEATURE-COMPLETE VERSION of run_walk_forward_evaluation ===
-def run_walk_forward_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None):
+def run_walk_forward_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None, precond_mask=None):
     """
     Run walk-forward analysis on signals.
     Includes full checkpointing, ETA, and optimization logic.
@@ -2346,10 +2347,10 @@ def run_walk_forward_evaluation(signals, price_data, target_tickers, config, pat
             
             last_update_time = now
 
-        train_results = backtest_signals(signals, train_data, target_tickers, period_name="train")
+        train_results = backtest_signals(signals, train_data, target_tickers, period_name="train", precond_mask=precond_mask)
         train_results.drop(columns=['Signal Returns'], inplace=True, errors='ignore')
-        
-        test_results  = backtest_signals(signals, test_data,  target_tickers, period_name="test")
+
+        test_results  = backtest_signals(signals, test_data,  target_tickers, period_name="test", precond_mask=precond_mask)
 
         combo_df = pd.DataFrame()
         if base_cfg and base_cfg.get('enable_synergistic_combos', False):
@@ -2420,7 +2421,7 @@ def run_walk_forward_evaluation(signals, price_data, target_tickers, config, pat
     return pd.DataFrame()
 
 # === FINAL CORRECTED VERSION of run_rolling_window_evaluation ===
-def run_rolling_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None):
+def run_rolling_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None, precond_mask=None):
     """
     Run rolling window analysis with fixed-size training windows.
     Includes full checkpointing, ETA, and optimization logic.
@@ -2506,13 +2507,13 @@ def run_rolling_window_evaluation(signals, price_data, target_tickers, config, p
                 safe_print("  [Checkpoint] Progress saved successfully.")
             except Exception as e:
                 safe_print(f"  [Checkpoint] WARNING: Could not save checkpoint. Error: {e}")
-            
+
             last_update_time = now
 
-        train_results = backtest_signals(signals, train_data, target_tickers, period_name="train")
+        train_results = backtest_signals(signals, train_data, target_tickers, period_name="train", precond_mask=precond_mask)
         train_results.drop(columns=['Signal Returns'], inplace=True, errors='ignore')
-        
-        test_results = backtest_signals(signals, test_data, target_tickers, period_name="test")
+
+        test_results = backtest_signals(signals, test_data, target_tickers, period_name="test", precond_mask=precond_mask)
 
         combo_df = pd.DataFrame()
         if base_cfg and base_cfg.get('enable_synergistic_combos', False):
@@ -2580,7 +2581,7 @@ def run_rolling_window_evaluation(signals, price_data, target_tickers, config, p
     return pd.DataFrame()
 
 # === FULLY CORRECTED AND FEATURE-COMPLETE VERSION of run_expanding_window_evaluation ===
-def run_expanding_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None):
+def run_expanding_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix="", base_cfg=None, precond_mask=None):
     """
     Run expanding window analysis on signals.
     Includes full checkpointing, ETA, and optimization logic.
@@ -2764,27 +2765,21 @@ def run_comprehensive_evaluation(signals, price_data, target_tickers, eval_modes
         'holdout': {}
     }
 
-    # === FINAL FIX: Pre-filter the signals IN THE MAIN PROCESS ===
-    filtered_signals = signals # Start with the original signals
-
+    # Build precond_mask (if configured) and pass it through to each evaluation.
+    # Masking is applied per-windowed-slice inside _run_single_backtest so it
+    # is correct within each walk-forward / rolling / expanding window.
+    precond_mask = None
     if base_cfg.get('preconditions'):
-        print("\nApplying preconditions to all signals...")
+        print("\nBuilding precondition mask...")
         try:
-            precond_mask = build_precondition_series(price_data, base_cfg['preconditions'], base_cfg.get('precondition_combine', 'AND'))
-            
-            # Create a new dictionary of signals that are already pre-filtered
-            # We handle DataFrame vs Series automatically
+            precond_mask = build_precondition_series(
+                price_data, base_cfg['preconditions'], base_cfg.get('precondition_combine', 'AND')
+            )
             if isinstance(precond_mask, pd.DataFrame):
                 precond_mask = precond_mask.iloc[:, 0]
-                
-            filtered_signals = {
-                name: s & precond_mask 
-                for name, s in tqdm(signals.items(), desc="Filtering Signals")
-            }
-            print("✓ Signals successfully pre-filtered.")
+            print("✓ Precondition mask built.")
         except Exception as e:
-            print(f"⚠️ Precondition error: {e}. Continuing with unfiltered signals.")
-            filtered_signals = signals # Fallback to original signals on error
+            print(f"⚠️ Precondition error: {e}. Continuing without precondition mask.")
     else:
         print("\n[preconditions] Active expressions: (none)")
 
@@ -2796,8 +2791,8 @@ def run_comprehensive_evaluation(signals, price_data, target_tickers, eval_modes
         train_data, test_data, _, _ = calculate_embargo_split(
             price_data, config.holdout_train_pct, config.embargo_days, target_tickers[0])
         
-        train_results = backtest_signals(filtered_signals, train_data, target_tickers, "train")
-        test_results = backtest_signals(filtered_signals, test_data, target_tickers, "test")
+        train_results = backtest_signals(signals, train_data, target_tickers, "train", precond_mask=precond_mask)
+        test_results = backtest_signals(signals, test_data, target_tickers, "test", precond_mask=precond_mask)
         
         if base_cfg.get('enable_synergistic_combos', False):
             combo_df = enrich_with_synergistic_combos(
@@ -2845,21 +2840,21 @@ def run_comprehensive_evaluation(signals, price_data, target_tickers, eval_modes
 
     # --- 2. Walk-forward evaluation ---
     if EvalMode.WALK_FORWARD in eval_modes and EvalMode.WALK_FORWARD not in completed_evaluations:
-        wf_results = run_walk_forward_evaluation(filtered_signals, price_data, target_tickers, config, paths, name_prefix, base_cfg)
+        wf_results = run_walk_forward_evaluation(signals, price_data, target_tickers, config, paths, name_prefix, base_cfg, precond_mask=precond_mask)
         all_results['walk_forward'] = wf_results
         completed_evaluations.append(EvalMode.WALK_FORWARD)
         print("--- Walk-Forward Evaluation Complete ---")
 
     # --- 3. Expanding window evaluation ---
     if EvalMode.EXPANDING in eval_modes and EvalMode.EXPANDING not in completed_evaluations:
-        ew_results = run_expanding_window_evaluation(filtered_signals, price_data, target_tickers, config, paths, name_prefix, base_cfg)
+        ew_results = run_expanding_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix, base_cfg, precond_mask=precond_mask)
         all_results['expanding'] = ew_results
         completed_evaluations.append(EvalMode.EXPANDING)
         print("--- Expanding Window Evaluation Complete ---")
 
     # --- 4. Rolling window evaluation ---
     if EvalMode.ROLLING in eval_modes and EvalMode.ROLLING not in completed_evaluations:
-        roll_results = run_rolling_window_evaluation(filtered_signals, price_data, target_tickers, config, paths, name_prefix, base_cfg)
+        roll_results = run_rolling_window_evaluation(signals, price_data, target_tickers, config, paths, name_prefix, base_cfg, precond_mask=precond_mask)
         all_results['rolling'] = roll_results
         completed_evaluations.append(EvalMode.ROLLING)
         print("--- Rolling Window Evaluation Complete ---")
@@ -3421,8 +3416,15 @@ def get_enhanced_user_inputs():
     print("If you use a name that already exists, the script will attempt to resume that run.")
     default_name = f"run_{datetime.now().strftime('%Y%m%d')}"
     run_name = safe_input("Enter Run Name", default=default_name)
-    config = {'run_name': run_name} # Start the config dict with the run name
+    config = {'run_name': run_name}  # Start the config dict with the run name
     # =====================================
+
+    print("\nSystem Resources:")
+    max_workers_input = safe_input(
+        "Max parallel workers (lower = less RAM; default 5, recommended for 16 GB+ systems): ",
+        default="5"
+    ).strip()
+    config['max_workers'] = int(max_workers_input) if max_workers_input.isdigit() else 5
 
     print("Select evaluation methods to run:\n")
 
@@ -3915,6 +3917,8 @@ def enhanced_main():
             print("\n" + "="*20 + " FRESH RUN " + "="*20)
             base_cfg = get_enhanced_user_inputs()
             base_cfg['run_name'] = run_name
+            global MAX_WORKERS
+            MAX_WORKERS = base_cfg.get('max_workers', 5)
             run_idx = 1
             completed_evaluations = []
 
@@ -4377,23 +4381,24 @@ def calculate_quantstats_metrics(returns, benchmark_returns=None):
 # === FINAL CORRECTED VERSION of _run_single_backtest ===
 def _run_single_backtest(args: tuple) -> dict:
     """
-    Helper function for parallel backtesting. Pre-filtering is now done
-    in the main process, so this function is simpler.
+    Helper function for parallel backtesting. Applies precond_mask per-slice
+    inside the worker so masking is correct within each windowed evaluation.
     """
-    # Unpack the now-shorter tuple of arguments
-    (signal_name, signal, price_data, target_ticker, daily_ret, EXECUTION_MODE) = args
-    
+    (signal_name, signal, price_data, target_ticker, daily_ret, precond_mask, EXECUTION_MODE) = args
+
     import numpy as np
     import pandas as pd
-    
+
     def align_signal_and_returns(signal, returns):
         if EXECUTION_MODE == "MOC":
             return signal, returns.shift(-1).fillna(0.0)
-        else: # NEXT_BAR
+        else:  # NEXT_BAR
             return signal.shift(1).fillna(False), returns
-            
-    # The signal passed in is already pre-filtered, so we just use it directly.
+
     sig = signal.reindex(price_data.index).fillna(False)
+    if precond_mask is not None:
+        pc = precond_mask.reindex(price_data.index).fillna(False)
+        sig = sig & pc
     
     sig, aligned_returns = align_signal_and_returns(sig, daily_ret[target_ticker])
     ret = (sig * aligned_returns).astype('float64')
@@ -4412,24 +4417,22 @@ def _run_single_backtest(args: tuple) -> dict:
 
 
 # === FINAL PARALLEL VERSION of backtest_signals ===
-def backtest_signals(signals, price_data, target_tickers, benchmark_data=None, period_name=""):
+def backtest_signals(signals, price_data, target_tickers, benchmark_data=None, period_name="", precond_mask=None):
     """Backtest individual signals using a ProcessPoolExecutor for parallel computation."""
     daily_ret = price_data.pct_change().fillna(0.0)
-    
+
     # Prepare all the tasks to be run in parallel.
     tasks = []
     for target_ticker in target_tickers:
         for signal_name, signal in signals.items():
-            # NOTE: We pass EXECUTION_MODE explicitly to ensure the child process knows the setting.
-            # precond_mask REMOVED from this tuple
-            task_args = (signal_name, signal, price_data, target_ticker, 
-                         daily_ret, EXECUTION_MODE)
+            task_args = (signal_name, signal, price_data, target_ticker,
+                         daily_ret, precond_mask, EXECUTION_MODE)
             tasks.append(task_args)
 
     desc = f'Backtesting {period_name} signals' if period_name else 'Backtesting signals'
     
     results = []
-    with ProcessPoolExecutor(max_workers=5) as executor:
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results_iterator = executor.map(_run_single_backtest, tasks)
         results = list(tqdm(results_iterator, total=len(tasks), desc=desc, leave=False))
 
@@ -4964,7 +4967,7 @@ def enrich_with_synergistic_combos(
         desc = f"🔗 Generating combos for {tkr}"
         
         # Create the process pool with the initializer function and its arguments
-        with ProcessPoolExecutor(max_workers=5, initializer=_init_worker, initargs=init_args) as executor:
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS, initializer=_init_worker, initargs=init_args) as executor:
             results_iterator = executor.map(_find_combos_for_primary, tasks)
             
             list_of_lists = list(tqdm(results_iterator, total=len(tasks), desc=desc, leave=progress_leave))
