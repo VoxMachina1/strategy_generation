@@ -3,4 +3,4 @@ crescendo/
 **/__pycache__/
 *.pyc
 .env
-data/
+/data/
