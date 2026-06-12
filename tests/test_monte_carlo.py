@@ -10,6 +10,9 @@ Covers success criteria:
   SC-6: Decimal→percent conversion is applied by pipeline interfaces
 """
 
+import matplotlib
+matplotlib.use("Agg")  # force non-interactive backend before any pyplot import
+
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
