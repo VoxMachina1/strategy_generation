@@ -309,9 +309,14 @@ def _stage_tail_metrics(
             tail_rows.append(entry)
             continue
 
-        # Masked return series: days signal is active get target return, else 0
+        # Active-day returns only — tail_metrics expects signal days, not the
+        # full series. Including inactive days (zeros) destroys win rate stats.
         signal_col = signal_matrix[:, col_i]
-        r = np.where(signal_col, tr_moc, 0.0)
+        r = tr_moc[signal_col]
+
+        if len(r) == 0:
+            tail_rows.append(entry)
+            continue
 
         tm = tail_metrics(r)
         entry.update({_rename[k]: v for k, v in tm.items() if k in _rename})
