@@ -371,6 +371,8 @@ def _stage_monte_carlo(
     prog.start("Monte Carlo simulation")
     mc_results = []
     sig_idx = {name: i for i, name in enumerate(signal_names)}
+    mc_dir = output_dir / "mc_plots"
+    mc_dir.mkdir(exist_ok=True)
 
     for _, row in top_n_df.iterrows():
         sig_name = row["signal_name"]
@@ -382,7 +384,7 @@ def _stage_monte_carlo(
         tr_moc     = target_returns_dict[target]
         results = run_mc_for_signal(
             signal_col, tr_moc, bil_returns, dates,
-            output_dir=str(output_dir),
+            output_dir=str(mc_dir),
             portfolio_name=sig_name.replace("/", "_"),
         )
         mc_results.extend(results)
@@ -408,15 +410,18 @@ def _stage_verify_symphony(
     prog.start("Verifying symphony round-trip")
     results = verify_composer_output(symphony, signal_matrix, signal_names, price_df)
 
-    warnings = [name for name, r in results.items() if r.get("warning")]
-    if warnings:
-        print(f"\n  WARNING: {len(warnings)} signal(s) below 99% match rate:")
-        for name in warnings:
-            rate = results[name].get("match_rate")
-            rate_str = f"{rate:.1%}" if rate is not None else "N/A"
-            print(f"    {name}: {rate_str}")
+    # Only warn about signals that ARE in the symphony but fail round-trip.
+    # match_rate=None means the signal wasn't selected into top-N — expected, not a warning.
+    failures = [name for name, r in results.items()
+                if r.get("warning") and r.get("match_rate") is not None]
+    if failures:
+        print(f"\n  WARNING: {len(failures)} symphony signal(s) below 99% match rate:")
+        for name in failures:
+            rate = results[name]["match_rate"]
+            print(f"    {name}: {rate:.1%}")
     else:
-        print(f"  All {len(results)} signals verified ✓")
+        n_verified = sum(1 for r in results.values() if r.get("match_rate") is not None)
+        print(f"  {n_verified} symphony signals verified ✓")
 
     prog.done()
     return results
@@ -435,6 +440,7 @@ def _stage_write_output(
     base_output_dir: Path,
     combo_df: pd.DataFrame | None,
     prog: _Progress,
+    run_timestamp: str | None = None,
 ) -> dict:
     from src.output import write_output
 
@@ -456,6 +462,7 @@ def _stage_write_output(
         bil_returns=bil_returns,
         dates=dates,
         all_combos_df=combo_df if (combo_df is not None and not combo_df.empty) else None,
+        run_timestamp=run_timestamp,
     )
     prog.done()
     return paths
@@ -521,6 +528,10 @@ def main():
 
     prog = _Progress(n_stages)
     base_output_dir = Path(args.output)
+    from datetime import datetime as _dt
+    run_timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = base_output_dir / run_timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         price_df, dates = _stage_fetch_data(cfg, prog)
@@ -576,7 +587,7 @@ def main():
             _stage_monte_carlo(
                 cfg, top_n_df, signal_matrix, signal_names,
                 target_returns_dict, bil_returns, dates,
-                base_output_dir, prog
+                run_dir, prog
             )
 
         paths = _stage_write_output(
@@ -585,6 +596,7 @@ def main():
             base_output_dir,
             combo_df if run_combos else None,
             prog,
+            run_timestamp=run_timestamp,
         )
 
         print("\n=== Pipeline complete ===")

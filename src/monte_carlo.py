@@ -226,9 +226,7 @@ def analyze_drawdowns(
         dates = dates[:min_length]
         returns = returns[:min_length]
 
-    date_objects = [
-        pd.to_datetime(d).date() if isinstance(d, str) else d for d in dates
-    ]
+    date_objects = [pd.Timestamp(d).date() for d in dates]
 
     # --- Drawdown period detection -------------------------------------------
     drawdown_periods = []
@@ -340,18 +338,6 @@ def analyze_drawdowns(
     avg_drawdown_depth = (
         sum(non_zero_drawdowns) / len(non_zero_drawdowns) if non_zero_drawdowns else 0
     )
-
-    print(f"\nDrawdown Calculation Debug:")
-    print(f"Overall Max Drawdown: {max_drawdown:.2f}%")
-    print(f"Number of drawdown periods found: {len(drawdown_periods)}")
-    if drawdown_periods:
-        max_period = max(drawdown_periods, key=lambda x: x["max_drawdown"])
-        print(
-            f"Largest period drawdown: {max_period['max_drawdown']:.2f}% "
-            f"(Trading Days: {max_period['duration']}, "
-            f"Calendar Days: {max_period['calendar_days']}, "
-            f"{max_period['start_date']} to {max_period['end_date']})"
-        )
 
     # --- Plot ----------------------------------------------------------------
     fig = plt.figure(figsize=(15, 12))
