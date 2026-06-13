@@ -91,6 +91,9 @@ def _apply_cli_overrides(cfg: dict, args: argparse.Namespace) -> dict:
         cfg["run_combos"] = False
     if args.no_mc:
         cfg["run_mc"] = False
+    if args.insert_into is not None:
+        cfg["insert_into"] = args.insert_into
+        cfg["insert_mode"] = args.insert_mode
     return cfg
 
 
@@ -337,6 +340,26 @@ def _stage_build_symphony(top_n_specs: list, prog: _Progress) -> dict:
     return symphony
 
 
+def _stage_mode_c(
+    symphony: dict,
+    insert_into: str,
+    insert_mode: str,
+    top_n_specs: list,
+    safe_asset: str,
+    prog: _Progress,
+) -> dict:
+    """Load an existing symphony JSON and insert top-N signals into it."""
+    from src.composer import insert_into_symphony
+
+    prog.start(f"Mode C — inserting into {Path(insert_into).name} ({insert_mode})")
+    with open(insert_into) as f:
+        existing = json.load(f)
+    result = insert_into_symphony(existing, top_n_specs, mode=insert_mode,
+                                  safe_asset=safe_asset)
+    prog.done()
+    return result
+
+
 def _stage_monte_carlo(
     cfg: dict,
     top_n_df: pd.DataFrame,
@@ -428,6 +451,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--top-n",        type=int, default=None, dest="top_n")
     p.add_argument("--no-combos",    action="store_true", dest="no_combos")
     p.add_argument("--no-mc",        action="store_true", dest="no_mc")
+    p.add_argument("--insert-into",  default=None, dest="insert_into",
+                   metavar="SYMPHONY_JSON",
+                   help="Path to an existing symphony JSON; insert top-N signals into it")
+    p.add_argument("--insert-mode",  choices=["leaf", "root"], default="leaf",
+                   dest="insert_mode",
+                   help="leaf: append inside wt-cash-equal; root: wrap existing strategy")
     p.add_argument("--dry-run",      action="store_true", dest="dry_run")
     return p.parse_args()
 
@@ -447,14 +476,21 @@ def main():
         print(json.dumps(cfg, indent=2, default=str))
         return
 
-    run_combos = cfg.get("run_combos", True)
-    run_mc     = cfg.get("run_mc", True)
+    run_combos  = cfg.get("run_combos", True)
+    run_mc      = cfg.get("run_mc", True)
+    insert_into = cfg.get("insert_into")
+
+    if insert_into and not Path(insert_into).exists():
+        print(f"Error: --insert-into path not found: {insert_into}")
+        sys.exit(1)
 
     # Count active stages
     n_stages = 11  # base stages always run
     if run_combos:
         n_stages += 1
     if run_mc:
+        n_stages += 1
+    if insert_into:
         n_stages += 1
 
     prog = _Progress(n_stages)
@@ -496,6 +532,15 @@ def main():
         )
 
         symphony = _stage_build_symphony(top_n_specs, prog)
+
+        if insert_into:
+            symphony = _stage_mode_c(
+                symphony, insert_into,
+                insert_mode=cfg.get("insert_mode", "leaf"),
+                top_n_specs=top_n_specs,
+                safe_asset=cfg.get("benchmark_ticker", "BIL"),
+                prog=prog,
+            )
 
         if run_mc:
             _stage_monte_carlo(
