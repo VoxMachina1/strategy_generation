@@ -76,17 +76,6 @@ def run_monte_carlo_simulation(
     # Calculate probabilities
     prob_positive = len(positive_returns) / len(returns_array)
 
-    print(
-        f"Return characteristics - Probability of positive return: {prob_positive:.4f}"
-    )
-    print(
-        f"Positive returns - Mean: {np.mean(positive_returns):.4f}, "
-        f"Std: {np.std(positive_returns):.4f}"
-    )
-    print(
-        f"Negative returns - Mean: {np.mean(negative_returns):.4f}, "
-        f"Std: {np.std(negative_returns):.4f}"
-    )
 
     # Initialize arrays to store simulation results
     cumulative_returns = np.zeros((num_simulations, simulation_length + 1))
@@ -218,10 +207,6 @@ def analyze_drawdowns(
         ]
 
     if len(dates) != len(returns):
-        print(
-            f"Warning: Length mismatch between dates ({len(dates)}) "
-            f"and returns ({len(returns)})"
-        )
         min_length = min(len(dates), len(returns))
         dates = dates[:min_length]
         returns = returns[:min_length]
@@ -312,20 +297,6 @@ def analyze_drawdowns(
         reverse=True,
     )
 
-    print("\nTop 5 Significant Drawdown Periods (>20 calendar days):")
-    print(
-        f"{'Rank':<5} {'Trading Days':<12} {'Calendar Days':<14} "
-        f"{'Max Drawdown':<15} {'Start Date':<12} {'End Date':<12}"
-    )
-    print("-" * 70)
-    for i, period in enumerate(significant_periods[:5], 1):
-        print(
-            f"{i:<5} {period['duration']:<12} {period['calendar_days']:<14} "
-            f"{period['max_drawdown']:.2f}%{' ':<9} "
-            f"{period['start_date']:<12} {period['end_date']:<12}"
-        )
-    if not significant_periods:
-        print("No significant drawdown periods (>20 calendar days) found.")
 
     avg_drawdown_length = (
         total_days_in_drawdown / len(drawdown_periods) if drawdown_periods else 0
@@ -451,7 +422,8 @@ def analyze_drawdowns(
             p = np.poly1d(z)
             x_range = np.linspace(min(max_drawdowns_periods), max(max_drawdowns_periods), 100)
             ax6.plot(x_range, p(x_range), "g--", alpha=0.7)
-            corr = np.corrcoef(max_drawdowns_periods, calendar_days)[0, 1]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                corr = np.corrcoef(max_drawdowns_periods, calendar_days)[0, 1]
             ax6.text(0.05, 0.95, f"Calendar Day Correlation: {corr:.2f}",
                      transform=ax6.transAxes, fontsize=10, verticalalignment="top",
                      bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
@@ -693,7 +665,6 @@ def run_walk_forward_test(
         actual_cagr, cagr_percentile
     """
     if len(returns) <= test_period_length:
-        print(f"Not enough data for walk-forward test of {test_period_length} days")
         return None
 
     train_returns = returns[:-test_period_length]
@@ -701,15 +672,7 @@ def run_walk_forward_test(
     test_dates    = dates[-test_period_length:]
 
     if len(train_returns) < 30:
-        print(
-            f"Not enough training data for walk-forward test of {test_period_length} days"
-        )
         return None
-
-    print(f"\n--- Running Walk-Forward Test for {test_period_length} days ---")
-    print(
-        f"Training on {len(train_returns)} days, testing on {test_period_length} days"
-    )
 
     num_simulations = 10000
     simulation_results = run_monte_carlo_simulation(
@@ -852,47 +815,12 @@ def run_walk_forward_test(
         cagr_5th    = np.percentile(cagr_values, 5)
         cagr_95th   = np.percentile(cagr_values, 95)
 
-        print(f"\nCAGR Distribution Statistics:")
-        print(f"Mean CAGR: {cagr_mean:.2f}%")
-        print(f"Median CAGR: {cagr_median:.2f}%")
-        print(f"Standard Deviation: {cagr_std:.2f}%")
-        print(f"5th Percentile: {cagr_5th:.2f}%")
-        print(f"95th Percentile: {cagr_95th:.2f}%")
-        print(f"Actual CAGR: {actual_cagr:.2f}% (Percentile: {cagr_percentile:.1f}%)")
-
-    # --- Print summary -------------------------------------------------------
-    print(f"\nWalk-Forward Test Results for {period_desc}:")
-    print(f"Test Period: {test_start_date} to {test_end_date}")
-    print(f"Actual Cumulative Return: {actual_final_return:.2f}%")
-    if test_period_length >= 20:
-        print(f"Actual Annualized Return: {actual_annualized_return:.2f}%")
-        print(f"Actual Sharpe Ratio: {actual_sharpe:.2f}")
-        print(f"Actual Max Drawdown: {actual_max_drawdown:.2f}%")
-    print(f"Percentile Rank: {actual_percentile:.1f}%")
-
     median_return = percentiles["50"][-1]
     error         = actual_final_return - median_return
     percent_error = (error / abs(median_return)) * 100 if abs(median_return) > 0.01 else 0
 
-    print(f"Median Forecast: {median_return:.2f}%")
-    print(f"Forecast Error: {error:.2f}% ({percent_error:.2f}%)")
-
     in_90_interval = percentiles["5"][-1]  <= actual_final_return <= percentiles["95"][-1]
     in_50_interval = percentiles["25"][-1] <= actual_final_return <= percentiles["75"][-1]
-
-    print(f"Actual within 90% Confidence Interval: {in_90_interval}")
-    print(f"Actual within 50% Confidence Interval: {in_50_interval}")
-    print(f"\nDrawdown Analysis:")
-    print(f"Maximum Drawdown: {actual_max_drawdown:.2f}%")
-    print(f"Average Drawdown: {drawdown_stats['avg_drawdown']:.2f}%")
-    print(f"Total Days in Drawdown: {drawdown_stats['total_drawdown_days']} trading days")
-    print(f"Number of Drawdown Periods: {drawdown_stats['drawdown_periods']}")
-    print(f"Average Trading Day Length: {drawdown_stats['avg_drawdown_length']:.1f} days")
-    print(f"Average Calendar Day Length: {drawdown_stats['avg_calendar_days']:.1f} days")
-    print(
-        f"Maximum Drawdown Duration: {drawdown_stats['max_drawdown_duration']} trading days, "
-        f"{drawdown_stats['max_calendar_duration']} calendar days"
-    )
 
     result = {
         "period_length":              test_period_length,
