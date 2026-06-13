@@ -224,3 +224,133 @@ class TestPipelineIntegration:
         # True-child should nest a wt-cash-equal
         inner_wt = outer_if["children"][0]["children"][0]
         assert inner_wt["step"] == "wt-cash-equal"
+
+
+# ---------------------------------------------------------------------------
+# Symphony round-trip verification tests
+# ---------------------------------------------------------------------------
+
+class TestVerifySymphony:
+    """
+    Tests for _stage_verify_symphony and the verify_composer_output integration.
+
+    Verifies that:
+      - the stage runs and returns a dict keyed by signal name
+      - well-formed signals (built from known RSI conditions) achieve ≥99% match
+      - a deliberately broken signal (wrong threshold) triggers warning=True
+      - the stage is actually invoked in the pipeline (not silently skipped)
+    """
+
+    @pytest.fixture()
+    def verify_inputs(self):
+        """Build minimal inputs: a known RSI signal, its matrix column, price_df."""
+        from src.indicators import calculate_rsi
+        from src.composer import build_symphony
+
+        price_df = _PRICE_DF.copy()
+        rsi_vals = calculate_rsi(price_df["SPY"], 10).to_numpy(dtype=float)
+        signal_col = np.where(np.isnan(rsi_vals), False, rsi_vals < 30).astype(bool)
+        signal_matrix = signal_col.reshape(-1, 1)
+        signal_names = ["RSI_10_SPY_LT_30"]
+        symphony = build_symphony([{"signal_name": "RSI_10_SPY_LT_30",
+                                    "target_ticker": "TQQQ"}])
+        return symphony, signal_matrix, signal_names, price_df
+
+    def test_returns_dict_keyed_by_signal_name(self, verify_inputs):
+        import main as pipeline
+        symphony, signal_matrix, signal_names, price_df = verify_inputs
+        prog = pipeline._Progress(1)
+        results = pipeline._stage_verify_symphony(
+            symphony, signal_matrix, signal_names, price_df, prog
+        )
+        assert isinstance(results, dict)
+        assert "RSI_10_SPY_LT_30" in results
+
+    def test_known_signal_achieves_99pct_match(self, verify_inputs):
+        import main as pipeline
+        symphony, signal_matrix, signal_names, price_df = verify_inputs
+        prog = pipeline._Progress(1)
+        results = pipeline._stage_verify_symphony(
+            symphony, signal_matrix, signal_names, price_df, prog
+        )
+        r = results["RSI_10_SPY_LT_30"]
+        assert r["match_rate"] is not None
+        assert r["match_rate"] >= 0.99, f"match_rate={r['match_rate']:.4f}"
+        assert r["warning"] is False
+
+    def test_broken_signal_triggers_warning(self):
+        """A symphony built with the wrong threshold should fail round-trip."""
+        import main as pipeline
+        from src.indicators import calculate_rsi
+        from src.composer import build_symphony
+
+        price_df = _PRICE_DF.copy()
+        rsi_vals = calculate_rsi(price_df["SPY"], 10).to_numpy(dtype=float)
+        # Matrix uses threshold 30 ...
+        signal_col = np.where(np.isnan(rsi_vals), False, rsi_vals < 30).astype(bool)
+        signal_matrix = signal_col.reshape(-1, 1)
+        signal_names = ["RSI_10_SPY_LT_30"]
+        # ... but symphony encodes threshold 70 — deliberate mismatch
+        symphony = build_symphony([{"signal_name": "RSI_10_SPY_LT_70",
+                                    "target_ticker": "TQQQ"}])
+
+        prog = pipeline._Progress(1)
+        results = pipeline._stage_verify_symphony(
+            symphony, signal_matrix, signal_names, price_df, prog
+        )
+        # Signal not found in symphony → warning=True, match_rate=None
+        assert results["RSI_10_SPY_LT_30"]["warning"] is True
+
+    def test_verify_stage_called_in_pipeline(self, tmp_path):
+        """verify_results is populated (not empty) after a full pipeline run."""
+        import main as pipeline
+
+        prog = pipeline._Progress(13)
+        price_df = _PRICE_DF.copy()
+
+        indicator_cache = pipeline._stage_build_indicator_cache(_CFG, price_df, prog)
+        signal_matrix, signal_names, signal_metadata, date_index = \
+            pipeline._stage_generate_signal_matrix(_CFG, price_df, indicator_cache, prog)
+        target_returns_dict, bil_returns = \
+            pipeline._stage_compute_returns(_CFG, price_df, prog)
+        pipeline._stage_backtest_is(
+            _CFG, signal_matrix, signal_names,
+            target_returns_dict, bil_returns, date_index, prog
+        )
+        oos_raw_df = pipeline._stage_run_validation(
+            _CFG, signal_matrix, signal_names, signal_metadata,
+            price_df, bil_returns, prog
+        )
+        all_signals_df = pipeline._stage_aggregate_oos(oos_raw_df, prog)
+        all_signals_df = pipeline._stage_tail_metrics(
+            all_signals_df, signal_matrix, signal_names, target_returns_dict, prog
+        )
+        top_n_df, top_n_specs = pipeline._stage_select_top_n(
+            all_signals_df, _CFG["top_n"], prog
+        )
+        symphony = pipeline._stage_build_symphony(top_n_specs, prog)
+
+        verify_results = pipeline._stage_verify_symphony(
+            symphony, signal_matrix, signal_names, price_df, prog
+        )
+
+        # verify_composer_output returns one entry per unique signal name
+        # (not per (signal, target) pair), so compare against the unique set
+        assert len(verify_results) == len(set(signal_names))
+
+        # Every result must have the required keys
+        for name, r in verify_results.items():
+            assert "match_rate" in r
+            assert "warning" in r
+
+        # Signals that ARE in the symphony should have a real match_rate
+        symphony_signal_names = {
+            spec["signal_name"] for spec in top_n_specs
+        }
+        for name in symphony_signal_names:
+            if name in verify_results:
+                r = verify_results[name]
+                assert r["match_rate"] is not None, \
+                    f"{name} is in symphony but got match_rate=None"
+                assert r["match_rate"] >= 0.99, \
+                    f"{name} match_rate={r['match_rate']:.4f} below 99%"

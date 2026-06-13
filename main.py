@@ -410,6 +410,37 @@ def _stage_monte_carlo(
     return mc_results
 
 
+def _stage_verify_symphony(
+    symphony: dict,
+    signal_matrix: np.ndarray,
+    signal_names: list,
+    price_df: pd.DataFrame,
+    prog: _Progress,
+) -> dict:
+    """
+    Re-evaluate symphony conditions against price_df and compare to signal_matrix.
+    Logs a warning for any signal whose round-trip match rate falls below 99%.
+    Returns the full verification results dict.
+    """
+    from src.composer import verify_composer_output
+
+    prog.start("Verifying symphony round-trip")
+    results = verify_composer_output(symphony, signal_matrix, signal_names, price_df)
+
+    warnings = [name for name, r in results.items() if r.get("warning")]
+    if warnings:
+        print(f"\n  WARNING: {len(warnings)} signal(s) below 99% match rate:")
+        for name in warnings:
+            rate = results[name].get("match_rate")
+            rate_str = f"{rate:.1%}" if rate is not None else "N/A"
+            print(f"    {name}: {rate_str}")
+    else:
+        print(f"  All {len(results)} signals verified ✓")
+
+    prog.done()
+    return results
+
+
 def _stage_write_output(
     cfg: dict,
     all_signals_df: pd.DataFrame,
@@ -499,7 +530,7 @@ def main():
         sys.exit(1)
 
     # Count active stages
-    n_stages = 11  # base stages always run
+    n_stages = 12  # base stages always run (includes verify)
     if run_combos:
         n_stages += 1
     if run_mc:
@@ -555,6 +586,10 @@ def main():
                 safe_asset=cfg.get("benchmark_ticker", "BIL"),
                 prog=prog,
             )
+
+        verify_results = _stage_verify_symphony(
+            symphony, signal_matrix, signal_names, price_df, prog
+        )
 
         if run_mc:
             _stage_monte_carlo(

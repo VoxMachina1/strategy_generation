@@ -1,6 +1,30 @@
-crescendo/
-**/.venv/
-**/__pycache__/
-*.pyc
+# Pipeline outputs — never commit
+output/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
 .env
-/data/
+*.env
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Jupyter
+.ipynb_checkpoints/
