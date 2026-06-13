@@ -129,12 +129,23 @@ def _stage_fetch_data(cfg: dict, prog: _Progress) -> tuple:
     return price_df, dates
 
 
+def _normalise_cfg_for_signals(cfg: dict) -> dict:
+    """
+    generate_signal_specs() uses "rsi_comparators" but config.py exposes "comparators".
+    Return a shallow copy with the key aligned.
+    """
+    out = dict(cfg)
+    if "rsi_comparators" not in out and "comparators" in out:
+        out["rsi_comparators"] = out["comparators"]
+    return out
+
+
 def _stage_build_indicator_cache(cfg: dict, price_df: pd.DataFrame, prog: _Progress) -> dict:
     from src.data.cache import build_indicator_cache
     from src.signals import generate_signal_specs, derive_required_indicators
 
     prog.start("Building indicator cache")
-    specs = generate_signal_specs(cfg)
+    specs = generate_signal_specs(_normalise_cfg_for_signals(cfg))
     required = derive_required_indicators(specs)
     cache = build_indicator_cache(price_df, required)
     prog.done()
@@ -144,11 +155,13 @@ def _stage_build_indicator_cache(cfg: dict, price_df: pd.DataFrame, prog: _Progr
 def _stage_generate_signal_matrix(
     cfg: dict, price_df: pd.DataFrame, indicator_cache: dict, prog: _Progress
 ) -> tuple:
-    from src.signals import generate_signal_matrix
+    from src.signals import generate_signal_matrix, generate_signal_specs
 
     prog.start("Generating signal matrix")
-    signal_matrix, signal_names, signal_metadata, date_index = generate_signal_matrix(
-        cfg, price_df, indicator_cache
+    specs = generate_signal_specs(_normalise_cfg_for_signals(cfg))
+    date_index = price_df.index.to_numpy()
+    signal_matrix, signal_names, signal_metadata = generate_signal_matrix(
+        specs, indicator_cache, date_index
     )
     if signal_matrix.shape[1] == 0:
         print()
@@ -193,9 +206,10 @@ def _stage_backtest_is(
     prog.start("In-sample backtest (all targets)")
     rows = []
     for ticker, tr_moc in target_returns_dict.items():
-        df = batch_backtest(signal_matrix, tr_moc, bil_returns, date_index,
-                            signal_names=signal_names,
-                            n_workers=cfg.get("n_workers"))
+        metrics = batch_backtest(signal_matrix, tr_moc, bil_returns)
+        n = signal_matrix.shape[1]
+        df = pd.DataFrame({k: v for k, v in metrics.items()})
+        df["signal_name"] = signal_names[:n]
         df["target"] = ticker
         rows.append(df)
     is_results_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
