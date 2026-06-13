@@ -211,3 +211,82 @@ def test_run_parallel_backtests_matches_direct():
                 parallel_results[i][key], direct[key], rtol=1e-9,
                 err_msg=f"window {i}, metric '{key}' mismatch",
             )
+
+
+# ---------------------------------------------------------------------------
+# safe_asset_ticker vs benchmark_ticker separation
+# ---------------------------------------------------------------------------
+
+def test_inactive_return_uses_safe_asset_not_benchmark():
+    """
+    When a signal is inactive, the strategy earns safe_asset returns, not
+    benchmark returns. Verify batch_backtest uses bil_returns (safe asset)
+    for the inactive leg, not some other series.
+
+    Set up a signal that is NEVER active (all False). Total return should
+    equal the safe asset's compounded return exactly — not the benchmark's.
+    """
+    rng = np.random.default_rng(1)
+    n = 500
+    safe_returns  = rng.normal(0.0001, 0.0002, n)   # low-vol cash-like
+    bench_returns = rng.normal(0.0008, 0.015,  n)   # high-vol equity-like
+
+    signal_matrix = np.zeros((n, 1), dtype=bool)    # never fires
+    target_returns = rng.normal(0.001, 0.02, n)     # irrelevant — signal never active
+
+    result = batch_backtest(signal_matrix, target_returns, safe_returns)
+
+    expected_total_return = float((1 + safe_returns).prod() - 1)
+    np.testing.assert_allclose(
+        result["total_return"][0], expected_total_return, rtol=1e-9,
+        err_msg="Inactive signal should compound safe_asset returns, not benchmark returns",
+    )
+
+    # Confirm benchmark returns would give a different answer
+    bench_total = float((1 + bench_returns).prod() - 1)
+    assert abs(result["total_return"][0] - bench_total) > 1e-6, (
+        "Safe asset and benchmark returns appear identical — test is not meaningful"
+    )
+
+
+def test_stage_compute_returns_uses_safe_asset(tmp_path):
+    """
+    _stage_compute_returns reads safe_asset_ticker for bil_returns, not
+    benchmark_ticker. Verify by giving them different return series and
+    checking which one ends up in the output.
+    """
+    import pandas as pd
+    import main as pipeline
+
+    rng = np.random.default_rng(2)
+    n = 300
+    dates = pd.date_range("2020-01-02", periods=n, freq="B")
+
+    safe_close  = 100 * np.exp(np.cumsum(rng.normal(0.00005, 0.0002, n)))
+    bench_close = 100 * np.exp(np.cumsum(rng.normal(0.0004,  0.015,  n)))
+    target_close = 100 * np.exp(np.cumsum(rng.normal(0.001,  0.02,   n)))
+
+    price_df = pd.DataFrame(
+        {"BIL": safe_close, "SPY": bench_close, "TQQQ": target_close},
+        index=dates,
+    )
+
+    cfg = {
+        "target_tickers":    ["TQQQ"],
+        "benchmark_ticker":  "SPY",
+        "safe_asset_ticker": "BIL",
+    }
+
+    prog = pipeline._Progress(1)
+    _, bil_returns = pipeline._stage_compute_returns(cfg, price_df, prog)
+
+    # bil_returns should match BIL pct_change (MOC-shifted), not SPY
+    from src.backtest import prepare_moc_returns
+    expected_bil = prepare_moc_returns(price_df["BIL"].pct_change().to_numpy())
+    expected_spy = prepare_moc_returns(price_df["SPY"].pct_change().to_numpy())
+
+    np.testing.assert_allclose(bil_returns, expected_bil, rtol=1e-9,
+        err_msg="bil_returns should come from safe_asset_ticker (BIL), not benchmark_ticker (SPY)")
+    assert not np.allclose(bil_returns, expected_spy), (
+        "bil_returns matches SPY — safe_asset/benchmark separation is broken"
+    )

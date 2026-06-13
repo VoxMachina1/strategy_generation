@@ -96,9 +96,10 @@ def _stage_fetch_data(cfg: dict, prog: _Progress) -> tuple:
         print(f"\nError: {e}")
         sys.exit(1)
 
-    all_tickers = list(dict.fromkeys(
-        cfg["signal_tickers"] + cfg["target_tickers"] + [cfg["benchmark_ticker"]]
-    ))
+    extra = [cfg["benchmark_ticker"]]
+    if cfg.get("safe_asset_ticker"):
+        extra.append(cfg["safe_asset_ticker"])
+    all_tickers = list(dict.fromkeys(cfg["signal_tickers"] + cfg["target_tickers"] + extra))
     from config import DATA_DIR
     data_dir = DATA_DIR
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +158,14 @@ def _stage_generate_signal_matrix(
 def _stage_compute_returns(
     cfg: dict, price_df: pd.DataFrame, prog: _Progress
 ) -> tuple:
-    """Returns (target_returns_dict, bil_returns)."""
+    """Returns (target_returns_dict, bil_returns).
+
+    bil_returns is the safe-asset return series — what the strategy earns
+    when no signal is firing. It comes from safe_asset_ticker (e.g. BIL),
+    NOT benchmark_ticker (e.g. SPY). Keeping these separate matters:
+    benchmark_ticker is what performance is measured against; safe_asset_ticker
+    is what the portfolio actually holds during inactive periods.
+    """
     from src.backtest import prepare_moc_returns
 
     prog.start("Computing MOC returns")
@@ -166,8 +174,10 @@ def _stage_compute_returns(
         raw = price_df[ticker].pct_change().to_numpy()
         target_returns_dict[ticker] = prepare_moc_returns(raw)
 
-    bench = cfg["benchmark_ticker"]
-    bil_raw = price_df[bench].pct_change().to_numpy()
+    # Use safe_asset_ticker if present; fall back to benchmark_ticker for
+    # configs that predate this field.
+    safe_asset = cfg.get("safe_asset_ticker") or cfg["benchmark_ticker"]
+    bil_raw = price_df[safe_asset].pct_change().to_numpy()
     bil_returns = prepare_moc_returns(bil_raw)
 
     prog.done()
