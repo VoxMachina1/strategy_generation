@@ -269,7 +269,7 @@ def _stage_tail_metrics(
     all_signals_df: pd.DataFrame,
     signal_matrix: np.ndarray,
     signal_names: list,
-    oos_raw_df: pd.DataFrame,
+    target_returns_dict: dict,
     prog: _Progress,
 ) -> pd.DataFrame:
     from src.metrics import tail_metrics
@@ -291,31 +291,20 @@ def _stage_tail_metrics(
     for _, row in all_signals_df.iterrows():
         sig_name = row["signal_name"]
         target   = row["target"]
+        entry    = {"signal_name": sig_name, "target": target}
 
-        # Get OOS return series for this (signal, target) pair
-        mask = (oos_raw_df["signal_name"] == sig_name) & (oos_raw_df["target"] == target)
-        oos_subset = oos_raw_df[mask]
+        col_i = sig_idx.get(sig_name)
+        tr_moc = target_returns_dict.get(target)
 
-        # Approximate OOS returns: reconstruct from per-window sharpe is lossy;
-        # instead concatenate the window-level total_return values as a proxy series.
-        # For tail metrics we need the actual daily return series — fall back to the
-        # signal column applied to the full history if OOS raw returns aren't stored.
-        if "daily_returns" in oos_subset.columns:
-            r = np.concatenate(oos_subset["daily_returns"].to_list())
-        else:
-            # Fallback: use the IS signal column (conservative proxy)
-            col_i = sig_idx.get(sig_name)
-            if col_i is None:
-                tail_rows.append({"signal_name": sig_name, "target": target})
-                continue
-            signal_col = signal_matrix[:, col_i]
-            # We don't have per-target returns here without price_df;
-            # skip tail metrics for signals not found
-            tail_rows.append({"signal_name": sig_name, "target": target})
+        if col_i is None or tr_moc is None:
+            tail_rows.append(entry)
             continue
 
+        # Masked return series: days signal is active get target return, else 0
+        signal_col = signal_matrix[:, col_i]
+        r = np.where(signal_col, tr_moc, 0.0)
+
         tm = tail_metrics(r)
-        entry = {"signal_name": sig_name, "target": target}
         entry.update({_rename[k]: v for k, v in tm.items() if k in _rename})
         tail_rows.append(entry)
 
@@ -499,7 +488,7 @@ def main():
         all_signals_df = _stage_aggregate_oos(oos_raw_df, prog)
 
         all_signals_df = _stage_tail_metrics(
-            all_signals_df, signal_matrix, signal_names, oos_raw_df, prog
+            all_signals_df, signal_matrix, signal_names, target_returns_dict, prog
         )
 
         top_n_df, top_n_specs = _stage_select_top_n(
