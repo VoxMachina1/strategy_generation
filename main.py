@@ -366,6 +366,17 @@ def _stage_mode_c(
     return result
 
 
+def _mc_worker(args):
+    """Top-level function for process pool — must be importable at module level."""
+    from src.monte_carlo import run_mc_for_signal
+    signal_col, tr_moc, bil_returns, dates, mc_dir, portfolio_name = args
+    return run_mc_for_signal(
+        signal_col, tr_moc, bil_returns, dates,
+        output_dir=mc_dir,
+        portfolio_name=portfolio_name,
+    )
+
+
 def _stage_monte_carlo(
     cfg: dict,
     top_n_df: pd.DataFrame,
@@ -377,29 +388,44 @@ def _stage_monte_carlo(
     output_dir: Path,
     prog: _Progress,
 ) -> list:
-    from src.monte_carlo import run_mc_for_signal
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    prog.start("Monte Carlo simulation")
-    mc_results = []
+    mc_dir = str(output_dir / "mc_plots")
+    (output_dir / "mc_plots").mkdir(exist_ok=True)
+
     sig_idx = {name: i for i, name in enumerate(signal_names)}
-    mc_dir = output_dir / "mc_plots"
-    mc_dir.mkdir(exist_ok=True)
 
+    tasks = []
     for _, row in top_n_df.iterrows():
         sig_name = row["signal_name"]
         target   = row["target"]
         col_i    = sig_idx.get(sig_name)
         if col_i is None or target not in target_returns_dict:
             continue
-        signal_col = signal_matrix[:, col_i]
-        tr_moc     = target_returns_dict[target]
-        results = run_mc_for_signal(
-            signal_col, tr_moc, bil_returns, dates,
-            output_dir=str(mc_dir),
-            portfolio_name=sig_name.replace("/", "_"),
-        )
-        mc_results.extend(results)
+        tasks.append((
+            signal_matrix[:, col_i],
+            target_returns_dict[target],
+            bil_returns,
+            dates,
+            mc_dir,
+            sig_name.replace("/", "_"),
+        ))
 
+    n_tasks = len(tasks)
+    n_workers = cfg.get("mc_workers", min(4, n_tasks or 1))
+    prog.start(f"Monte Carlo simulation (0/{n_tasks})")
+
+    mc_results = []
+    completed = 0
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_mc_worker, t): t for t in tasks}
+        for fut in as_completed(futures):
+            completed += 1
+            print(f"\r  [13/14] Monte Carlo simulation ({completed}/{n_tasks})...", end="", flush=True)
+            result = fut.result()
+            mc_results.extend(result)
+
+    print()  # newline after progress line
     prog.done()
     return mc_results
 

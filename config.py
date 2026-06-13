@@ -133,6 +133,10 @@ PIPELINE_CONFIG = {
     # Whether to run Monte Carlo walk-forward simulation for top-N signals.
     # Disabling cuts runtime by several minutes on large top-N values.
     "run_mc": True,
+    # Number of parallel workers for Monte Carlo simulation.
+    # Each worker handles one signal at a time. Defaults to min(4, top_n).
+    # Increase on machines with many cores; reduce if you hit memory limits.
+    "mc_workers": 4,
 }
 
 # ---------------------------------------------------------------------------
