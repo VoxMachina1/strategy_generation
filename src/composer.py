@@ -13,9 +13,11 @@ Public API
 signal_to_if_child()         — single signal → Composer if-child node (flat encoding)
 combo_to_if_child()          — combo signal → Composer if-child node (compound encoding)
 build_symphony()             — top-N signals → complete Composer symphony JSON
+insert_into_symphony()       — insert signals into an existing symphony (Mode C)
 verify_composer_output()     — round-trip verification against the original signal matrix
 """
 
+import copy
 import re
 
 import numpy as np
@@ -473,7 +475,135 @@ def _wrap_with_preconditions(
 
 
 # ---------------------------------------------------------------------------
-# 8.7  Round-trip verification
+# 8.7  Mode C — insert signals into an existing symphony
+# ---------------------------------------------------------------------------
+
+def _find_wt_cash_equal(node: dict) -> dict | None:
+    """Return the first wt-cash-equal node found via depth-first traversal, or None."""
+    if node.get("step") == "wt-cash-equal":
+        return node
+    for child in node.get("children", []):
+        if isinstance(child, dict):
+            found = _find_wt_cash_equal(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _build_if_block(spec: dict, safe_asset: str) -> dict:
+    """Build an if-block from a top_n spec dict (same dispatch as build_symphony)."""
+    signal_name   = spec["signal_name"]
+    target_ticker = spec["target_ticker"]
+    preconditions = spec.get("preconditions") or []
+
+    try:
+        parse_combo_name(signal_name)
+        is_combo = True
+    except ValueError:
+        is_combo = False
+
+    if_node = (
+        combo_to_if_child(signal_name, target_ticker, safe_asset)
+        if is_combo
+        else signal_to_if_child(signal_name, target_ticker, safe_asset)
+    )
+
+    if preconditions:
+        if_node = _wrap_with_preconditions(if_node, preconditions, safe_asset)
+
+    return if_node
+
+
+def insert_into_symphony(
+    existing_json: dict,
+    top_n_specs: list,
+    mode: str,
+    safe_asset: str = "BIL",
+) -> dict:
+    """
+    Insert new signals into an existing Composer symphony without replacing its logic.
+
+    Parameters
+    ----------
+    existing_json : parsed Composer symphony dict (must have "step": "root" at top level)
+    top_n_specs   : list of dicts, each with keys:
+                      signal_name  : str
+                      target_ticker: str
+                      preconditions: list[str] | None (optional)
+    mode          : "leaf" or "root"
+                    "leaf" — append new if-blocks inside the existing wt-cash-equal node
+                    "root" — wrap the existing symphony's content as the payload of new
+                             gate signals (new signals are outer gates, checked first)
+    safe_asset    : ticker for off-signal else-branches (default "BIL")
+
+    Returns
+    -------
+    New dict — existing_json is not mutated.
+
+    Raises
+    ------
+    ValueError if mode is not "leaf" or "root", if existing_json is not a root symphony,
+    or if mode=="leaf" and no wt-cash-equal node exists.
+    """
+    if mode not in ("leaf", "root"):
+        raise ValueError(f"mode must be 'leaf' or 'root', got {mode!r}")
+    if existing_json.get("step") != "root":
+        raise ValueError("existing_json must have \"step\": \"root\" at the top level")
+
+    symphony = copy.deepcopy(existing_json)
+
+    if mode == "leaf":
+        wt_node = _find_wt_cash_equal(symphony)
+        if wt_node is None:
+            raise ValueError("No wt-cash-equal node found in existing_json")
+        for spec in top_n_specs:
+            wt_node["children"].append(_build_if_block(spec, safe_asset))
+        return symphony
+
+    # mode == "root": wrap existing wt-cash-equal children as the payload
+    # of a new outer gate for each spec, outermost spec first.
+    existing_wt = _find_wt_cash_equal(symphony)
+    if existing_wt is None:
+        raise ValueError("No wt-cash-equal node found in existing_json")
+
+    # current_payload is what the innermost new gate delivers when it fires
+    current_payload: list = existing_wt["children"]
+
+    for spec in reversed(top_n_specs):
+        if_block = _build_if_block(spec, safe_asset)
+        # Extract condition fields from the true-child of the if-block
+        true_child_src = if_block["children"][0]
+
+        new_true_child: dict = {
+            "step":               "if-child",
+            "collapsed?":         False,
+            "is-else-condition?": False,
+            "children":           [{"step": "wt-cash-equal", "children": current_payload}],
+        }
+        # Copy condition fields (flat or compound) onto the new true-child
+        for key in ("lhs-fn", "lhs-val", "lhs-fn-params", "comparator",
+                    "rhs-fixed-value?", "rhs-val", "rhs-fn", "rhs-fn-lhs-val",
+                    "rhs-fn-params", "condition"):
+            if key in true_child_src:
+                new_true_child[key] = true_child_src[key]
+
+        new_else_child: dict = {
+            "step":               "if-child",
+            "collapsed?":         False,
+            "is-else-condition?": True,
+            "children":           [_asset_node(safe_asset)],
+        }
+        current_payload = [{"step": "if", "children": [new_true_child, new_else_child]}]
+
+    return {
+        "step":      "root",
+        "rebalance": existing_json.get("rebalance", "daily"),
+        "children":  [{"step": "wt-cash-equal", "children": current_payload}],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8.8  Round-trip verification
 # ---------------------------------------------------------------------------
 
 def verify_composer_output(

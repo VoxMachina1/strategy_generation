@@ -8,7 +8,10 @@ Covers success criteria:
   SC-4: precond_expr_to_composer_condition parses all supported expression types
   SC-5: verify_composer_output returns match_rate ≥ 0.99 for a known signal
   SC-6: A_AND_NOT_B and B_AND_NOT_A correctly negate the relevant comparator
+  SC-7: insert_into_symphony correctly inserts in leaf and root modes
 """
+
+import copy
 
 import numpy as np
 import pandas as pd
@@ -17,6 +20,7 @@ import pytest
 from src.composer import (
     build_symphony,
     combo_to_if_child,
+    insert_into_symphony,
     precond_expr_to_composer_condition,
     signal_to_if_child,
     verify_composer_output,
@@ -313,3 +317,88 @@ class TestVerifyComposerOutput:
         assert len(results) == 2
         for name in signal_names:
             assert results[name]["match_rate"] >= 0.99
+
+
+# ---------------------------------------------------------------------------
+# SC-7: insert_into_symphony — Mode C
+# ---------------------------------------------------------------------------
+
+def _two_signal_symphony():
+    """A minimal symphony with two if-blocks inside wt-cash-equal."""
+    return build_symphony([
+        {"signal_name": "RSI_10_SPY_LT_30", "target_ticker": "TQQQ"},
+        {"signal_name": "RSI_14_SPY_GT_70", "target_ticker": "BIL"},
+    ])
+
+
+def _one_spec():
+    return [{"signal_name": "SMA_20_QQQ_GT_SMA_20_QQQ", "target_ticker": "TQQQ"}]
+
+
+class TestInsertIntoSymphony:
+    def test_leaf_appends_to_wt_cash_equal(self):
+        sym = _two_signal_symphony()
+        result = insert_into_symphony(sym, _one_spec(), mode="leaf")
+        wt = result["children"][0]
+        assert wt["step"] == "wt-cash-equal"
+        assert len(wt["children"]) == 3
+
+    def test_leaf_preserves_existing_children(self):
+        sym = _two_signal_symphony()
+        original_children = copy.deepcopy(sym["children"][0]["children"])
+        result = insert_into_symphony(sym, _one_spec(), mode="leaf")
+        kept = result["children"][0]["children"][:2]
+        assert kept == original_children
+
+    def test_root_wraps_wt_cash_equal_contents(self):
+        sym = _two_signal_symphony()
+        original_if_blocks = copy.deepcopy(sym["children"][0]["children"])
+        result = insert_into_symphony(sym, _one_spec(), mode="root")
+        # Outer wt-cash-equal has one if-block (the gate)
+        outer_wt = result["children"][0]
+        assert outer_wt["step"] == "wt-cash-equal"
+        assert len(outer_wt["children"]) == 1
+        gate = outer_wt["children"][0]
+        assert gate["step"] == "if"
+        # True-child's children should be a wt-cash-equal with the original if-blocks
+        true_child = gate["children"][0]
+        inner_wt = true_child["children"][0]
+        assert inner_wt["step"] == "wt-cash-equal"
+        assert inner_wt["children"] == original_if_blocks
+
+    def test_root_multiple_specs_nesting(self):
+        sym = _two_signal_symphony()
+        original_if_blocks = copy.deepcopy(sym["children"][0]["children"])
+        specs = [
+            {"signal_name": "RSI_10_SPY_LT_30", "target_ticker": "TQQQ"},
+            {"signal_name": "RSI_14_QQQ_LT_50", "target_ticker": "TQQQ"},
+        ]
+        result = insert_into_symphony(sym, specs, mode="root")
+        # Navigate to innermost: root→wt→if→true-child→wt→if→true-child→wt
+        outer_if = result["children"][0]["children"][0]
+        inner_wt = outer_if["children"][0]["children"][0]
+        assert inner_wt["step"] == "wt-cash-equal"
+        inner_if = inner_wt["children"][0]
+        innermost_wt = inner_if["children"][0]["children"][0]
+        assert innermost_wt["step"] == "wt-cash-equal"
+        assert innermost_wt["children"] == original_if_blocks
+
+    def test_insert_does_not_mutate_original(self):
+        sym = _two_signal_symphony()
+        original = copy.deepcopy(sym)
+        insert_into_symphony(sym, _one_spec(), mode="leaf")
+        assert sym == original
+        insert_into_symphony(sym, _one_spec(), mode="root")
+        assert sym == original
+
+    def test_invalid_mode_raises(self):
+        sym = _two_signal_symphony()
+        with pytest.raises(ValueError, match="mode must be"):
+            insert_into_symphony(sym, _one_spec(), mode="diagonal")
+
+    def test_leaf_no_wt_cash_equal_raises(self):
+        malformed = {"step": "root", "rebalance": "daily", "children": [
+            {"step": "if", "children": []}
+        ]}
+        with pytest.raises(ValueError, match="wt-cash-equal"):
+            insert_into_symphony(malformed, _one_spec(), mode="leaf")
