@@ -281,6 +281,60 @@ def generate_signal_specs(config: dict) -> list:
             target=target,
         ))
 
+    # -------------------------------------------------------------------------
+    # EXPERIMENTAL SIGNALS — gated by experimental_signals=True in config.
+    # These indicators are not yet supported by Composer and must not appear
+    # in production symphony exports. Enable only for research/testing.
+    # -------------------------------------------------------------------------
+    if config.get("experimental_signals", False):
+        macd_params_list = config.get("macd_params", [(12, 26, 9)])
+        bband_windows = config.get("bband_windows", [])
+        bband_std = config.get("bband_std", 2.0)
+
+        # MACD histogram signals: histogram gt 0 (bullish cross) / lt 0 (bearish cross)
+        # Cache key uses the param tuple as window: (ticker, "MACD", (fast, slow, signal))
+        for ticker, params, comp, target in itertools.product(
+            signal_tickers, macd_params_list, ["gt", "lt"], target_tickers
+        ):
+            fast, slow, sig_p = params
+            param_str = f"{fast}_{slow}_{sig_p}"
+            name = f"MACD_{param_str}_{ticker}_{comp.upper()}_0"
+            specs.append(SignalSpec(
+                name=name,
+                lhs_ticker=ticker,
+                lhs_fn="MACD",
+                lhs_window=tuple(params),  # (fast, slow, signal_period)
+                comparator=comp,
+                rhs_type="fixed",
+                rhs_value=0.0,
+                rhs_ticker=None,
+                rhs_fn=None,
+                rhs_window=None,
+                target=target,
+            ))
+
+        # Bollinger Band signals: price lt lower band / price gt upper band
+        # Modelled as indicator-vs-indicator where LHS is the price series (SMA_1 proxy)
+        # and RHS is the band. Cache uses window=bband_window for both.
+        for ticker, window, comp, target in itertools.product(
+            signal_tickers, bband_windows, ["lt", "gt"], target_tickers
+        ):
+            band_fn = "BBAND_LOWER" if comp == "lt" else "BBAND_UPPER"
+            name = f"BBAND_{window}_{ticker}_{comp.upper()}_{band_fn}"
+            specs.append(SignalSpec(
+                name=name,
+                lhs_ticker=ticker,
+                lhs_fn="SMA",
+                lhs_window=1,          # SMA(1) == close price, deduplicated in cache
+                comparator=comp,
+                rhs_type="indicator",
+                rhs_value=None,
+                rhs_ticker=ticker,
+                rhs_fn=band_fn,
+                rhs_window=window,
+                target=target,
+            ))
+
     return specs
 
 

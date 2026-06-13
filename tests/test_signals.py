@@ -236,3 +236,109 @@ def test_derive_required_indicators():
     assert ("QQQ", "SMA", 20) in required_set
     assert ("TLT", "SMA", 20) in required_set
     assert len(required) == 3  # deduplicated: SPY×RSI×10 appears once
+
+
+# ---------------------------------------------------------------------------
+# Experimental signals gate
+# ---------------------------------------------------------------------------
+
+_PRICE_DATES = np.array(
+    [np.datetime64("2020-01-02") + np.timedelta64(i, "D") for i in range(300)]
+)
+_PRICE_CLOSE = 100.0 * np.exp(np.cumsum(np.random.default_rng(0).normal(0.0003, 0.01, 300)))
+
+
+def _make_price_df():
+    import pandas as pd
+    return pd.DataFrame({"SPY": _PRICE_CLOSE}, index=pd.DatetimeIndex(_PRICE_DATES))
+
+
+def test_experimental_signals_off_by_default():
+    """No MACD or BBAND specs are generated when experimental_signals is absent/False."""
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["BIL"],
+        "rsi_comparators": ["lt"],
+        "rsi_windows": [10],
+        "rsi_thresholds": [30],
+        "macd_params": [(12, 26, 9)],
+        "bband_windows": [20],
+    }
+    specs = generate_signal_specs(cfg)
+    names = [s.name for s in specs]
+    assert not any("MACD" in n for n in names)
+    assert not any("BBAND" in n for n in names)
+
+
+def test_experimental_signals_enabled():
+    """MACD and BBAND specs are generated when experimental_signals=True."""
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["BIL"],
+        "rsi_comparators": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "experimental_signals": True,
+        "macd_params": [(12, 26, 9)],
+        "bband_windows": [20],
+        "bband_std": 2.0,
+    }
+    specs = generate_signal_specs(cfg)
+    names = [s.name for s in specs]
+    assert any("MACD" in n for n in names), "Expected MACD specs"
+    assert any("BBAND" in n for n in names), "Expected BBAND specs"
+
+
+def test_macd_signal_evaluates_correctly():
+    """MACD histogram spec produces a boolean column without errors."""
+    import pandas as pd
+    from src.data.cache import build_indicator_cache
+
+    price_df = _make_price_df()
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["BIL"],
+        "rsi_comparators": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "experimental_signals": True,
+        "macd_params": [(12, 26, 9)],
+        "bband_windows": [],
+    }
+    specs = generate_signal_specs(cfg)
+    required = derive_required_indicators(specs)
+    cache = build_indicator_cache(price_df, required)
+    date_index = price_df.index.to_numpy()
+    matrix, names, _ = generate_signal_matrix(specs, cache, date_index)
+
+    assert matrix.shape == (300, len(specs))
+    assert matrix.dtype == bool
+    # MACD histogram gt 0 and lt 0 should together cover most days (not all False)
+    assert matrix.any(), "Expected some True values in MACD signal matrix"
+
+
+def test_bband_signal_evaluates_correctly():
+    """Bollinger Band specs produce boolean columns without errors."""
+    import pandas as pd
+    from src.data.cache import build_indicator_cache
+
+    price_df = _make_price_df()
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["BIL"],
+        "rsi_comparators": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "experimental_signals": True,
+        "macd_params": [],
+        "bband_windows": [20],
+        "bband_std": 2.0,
+    }
+    specs = generate_signal_specs(cfg)
+    required = derive_required_indicators(specs)
+    cache = build_indicator_cache(price_df, required)
+    date_index = price_df.index.to_numpy()
+    matrix, names, _ = generate_signal_matrix(specs, cache, date_index)
+
+    assert matrix.shape == (300, len(specs))
+    assert matrix.dtype == bool

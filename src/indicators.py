@@ -66,6 +66,31 @@ def calculate_bbands_lower(series, period, num_std=2.0):
     return sma - (std * num_std)
 
 
+def calculate_bbands_upper(series, period, num_std=2.0):
+    """Upper Bollinger Band: SMA(period) + num_std * rolling_std(period)."""
+    sma = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    return sma + (std * num_std)
+
+
+def calculate_macd_histogram(series, fast=12, slow=26, signal_period=9):
+    """
+    MACD histogram: (MACD line) - (signal line).
+
+    Positive histogram → MACD crossed above signal (bullish).
+    Negative histogram → MACD crossed below signal (bearish).
+
+    NOTE: Composer does not yet support MACD as a condition. This function
+    is gated behind experimental_signals=True in config.py and should not
+    be used in production symphony exports.
+    """
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
+    return macd_line - signal_line
+
+
 def calculate_maxdd(series, period):
     """Rolling max drawdown over `period` days (returns positive %, e.g. 15.0 = 15% DD)."""
     def _maxdd(window):

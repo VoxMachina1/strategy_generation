@@ -7,6 +7,8 @@ from src.indicators import (
     calculate_cumret,
     calculate_atr,
     calculate_bbands_lower,
+    calculate_bbands_upper,
+    calculate_macd_histogram,
     calculate_maxdd,
     calculate_mareturn,
 )
@@ -16,18 +18,21 @@ def _compute_indicator(series, fn, window, price_df, ticker):
     """
     Dispatches a single-series indicator computation by label.
 
+    For most indicators, window is an integer lookback period.
+    For MACD, window is a (fast, slow, signal_period) tuple.
+
     Args:
         series:    pd.Series of close prices for the ticker
         fn:        indicator label string (case-insensitive)
-        window:    integer lookback period
-        price_df:  the full price DataFrame (needed for future ATR dispatch)
+        window:    integer lookback period, or tuple for multi-param indicators
+        price_df:  the full price DataFrame (needed for ATR dispatch)
         ticker:    ticker symbol string
 
     Returns:
         pd.Series of computed indicator values
 
     Raises:
-        NotImplementedError: for ATR (Phase 2 will add OHLC dispatch)
+        NotImplementedError: for ATR (requires OHLC columns)
         ValueError: for unrecognized indicator labels
     """
     fn_upper = fn.upper()
@@ -42,10 +47,16 @@ def _compute_indicator(series, fn, window, price_df, ticker):
     elif fn_upper == "ATR":
         raise NotImplementedError(
             "ATR dispatch in build_indicator_cache requires OHLC columns — "
-            "deferred to Phase 2. Use calculate_atr() directly with high/low/close Series."
+            "use calculate_atr() directly with high/low/close Series."
         )
     elif fn_upper == "BBAND_LOWER":
         return calculate_bbands_lower(series, window)
+    elif fn_upper == "BBAND_UPPER":
+        return calculate_bbands_upper(series, window)
+    elif fn_upper == "MACD":
+        # window is (fast, slow, signal_period) for MACD
+        fast, slow, signal_period = window
+        return calculate_macd_histogram(series, fast, slow, signal_period)
     elif fn_upper == "MAXDD":
         return calculate_maxdd(series, window)
     elif fn_upper == "MARETURN":
@@ -63,6 +74,7 @@ def build_indicator_cache(price_df, required):
         price_df:  DataFrame with columns = ticker symbols, index = date (DatetimeIndex).
                    This is the output of load_multi_ticker_aligned().
         required:  List of (ticker, fn_label, window) tuples. May contain duplicates.
+                   For MACD, window should be a (fast, slow, signal_period) tuple.
 
     Returns:
         dict mapping (ticker, fn_label, window) -> np.ndarray of shape (n_days,).
@@ -70,7 +82,7 @@ def build_indicator_cache(price_df, required):
 
     Raises:
         KeyError: if a ticker in required is not a column in price_df
-        NotImplementedError: if fn_label is "ATR" (Phase 2)
+        NotImplementedError: if fn_label is "ATR"
         ValueError: if fn_label is unrecognized
     """
     cache = {}

@@ -99,8 +99,9 @@ def _stage_fetch_data(cfg: dict, prog: _Progress) -> tuple:
     all_tickers = list(dict.fromkeys(
         cfg["signal_tickers"] + cfg["target_tickers"] + [cfg["benchmark_ticker"]]
     ))
-    data_dir = Path(__file__).parent / "data"
-    data_dir.mkdir(exist_ok=True)
+    from config import DATA_DIR
+    data_dir = DATA_DIR
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     check_freshness_and_update(all_tickers, api_keys, data_dir)
     price_df = load_multi_ticker_aligned(all_tickers, data_dir)

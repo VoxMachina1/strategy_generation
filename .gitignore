@@ -1,6 +1,6 @@
 # Pipeline outputs — never commit
-output/
-data/
+/output/
+/data/
 
 # Python
 __pycache__/
