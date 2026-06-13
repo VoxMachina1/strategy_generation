@@ -120,6 +120,24 @@ PIPELINE_CONFIG = {
     # -----------------------------------------------------------------------
     # Number of top signals to include in the Composer symphony output.
     "top_n": 50,
+    # -----------------------------------------------------------------------
+    # Top-N quality filters
+    # Applied before ranking — signals that fail any threshold are excluded
+    # from the report entirely, regardless of Sharpe.
+    # -----------------------------------------------------------------------
+    # Win rate after removing tail events. Filters out lottery-ticket signals
+    # that only look good because of a handful of rare lucky days.
+    "min_stripped_win_rate": 0.55,
+    # Raw win rate on all active days (including tail events).
+    "min_base_win_rate": 0.45,
+    # Maximum fraction of total return attributable to tail events.
+    # Set permissively to avoid filtering legitimate momentum signals.
+    "max_tail_concentration": 0.80,
+    # Fraction of OOS windows where Sharpe > 0. Filters regime-dependent signals.
+    "min_consistency_score": 0.60,
+    # Minimum number of OOS windows required. Below this there is no statistical
+    # basis for ranking the signal.
+    "min_n_iterations": 5,
     # Whether to generate and backtest pairwise signal combinations (AND/OR/etc.).
     # Disabling cuts runtime significantly on large universes.
     "run_combos": True,

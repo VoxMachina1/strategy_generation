@@ -141,7 +141,7 @@ class TestPipelineIntegration:
         )
 
         top_n_df, top_n_specs = pipeline._stage_select_top_n(
-            all_signals_df, _CFG["top_n"], prog
+            all_signals_df, _CFG["top_n"], _CFG, prog
         )
 
         symphony = pipeline._stage_build_symphony(top_n_specs, prog)
@@ -326,7 +326,7 @@ class TestVerifySymphony:
             all_signals_df, signal_matrix, signal_names, target_returns_dict, prog
         )
         top_n_df, top_n_specs = pipeline._stage_select_top_n(
-            all_signals_df, _CFG["top_n"], prog
+            all_signals_df, _CFG["top_n"], _CFG, prog
         )
         symphony = pipeline._stage_build_symphony(top_n_specs, prog)
 
@@ -354,3 +354,90 @@ class TestVerifySymphony:
                     f"{name} is in symphony but got match_rate=None"
                 assert r["match_rate"] >= 0.99, \
                     f"{name} match_rate={r['match_rate']:.4f} below 99%"
+
+
+# ---------------------------------------------------------------------------
+# Quality filter tests
+# ---------------------------------------------------------------------------
+
+class TestQualityFilters:
+    """Tests for _apply_quality_filters — the pre-ranking signal filter."""
+
+    def _make_df(self, **kwargs):
+        """Build a minimal signals DataFrame with one row, overridable per column."""
+        import pandas as pd
+        defaults = {
+            "signal_name":        "RSI_10_SPY_LT_30",
+            "target":             "TQQQ",
+            "Sharpe_p50":         1.5,
+            "N_Iterations":       10,
+            "Consistency_Score":  0.70,
+            "Stripped_Win_Rate":  0.60,
+            "Base_Win_Rate":      0.55,
+            "Tail_Concentration": 0.50,
+        }
+        defaults.update(kwargs)
+        return pd.DataFrame([defaults])
+
+    def _default_cfg(self):
+        return {
+            "min_stripped_win_rate": 0.55,
+            "min_base_win_rate":     0.45,
+            "max_tail_concentration": 0.80,
+            "min_consistency_score": 0.60,
+            "min_n_iterations":      5,
+        }
+
+    def test_good_signal_passes_all_filters(self):
+        import main as pipeline
+        df = self._make_df()
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 1
+
+    def test_low_stripped_win_rate_removed(self):
+        import main as pipeline
+        df = self._make_df(Stripped_Win_Rate=0.40)
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 0
+
+    def test_low_base_win_rate_removed(self):
+        import main as pipeline
+        df = self._make_df(Base_Win_Rate=0.30)
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 0
+
+    def test_high_tail_concentration_removed(self):
+        import main as pipeline
+        df = self._make_df(Tail_Concentration=0.95)
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 0
+
+    def test_low_consistency_score_removed(self):
+        import main as pipeline
+        df = self._make_df(Consistency_Score=0.40)
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 0
+
+    def test_too_few_iterations_removed(self):
+        import main as pipeline
+        df = self._make_df(N_Iterations=3)
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 0
+
+    def test_missing_column_skipped_gracefully(self):
+        """If a tail metric column isn't present, that filter is skipped."""
+        import main as pipeline
+        df = self._make_df()
+        df = df.drop(columns=["Stripped_Win_Rate", "Tail_Concentration"])
+        result = pipeline._apply_quality_filters(df, self._default_cfg())
+        assert len(result) == 1
+
+    def test_config_thresholds_respected(self):
+        """Overriding a threshold in cfg changes which signals pass."""
+        import main as pipeline
+        df = self._make_df(Stripped_Win_Rate=0.52)
+        # Fails at default 0.55
+        assert len(pipeline._apply_quality_filters(df, self._default_cfg())) == 0
+        # Passes at loosened 0.50
+        loose_cfg = {**self._default_cfg(), "min_stripped_win_rate": 0.50}
+        assert len(pipeline._apply_quality_filters(df, loose_cfg)) == 1

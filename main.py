@@ -323,12 +323,36 @@ def _stage_tail_metrics(
     return merged
 
 
+def _apply_quality_filters(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Drop signals that fail minimum quality thresholds before top-N ranking."""
+    filters = {
+        "Stripped_Win_Rate": (">=", cfg.get("min_stripped_win_rate", 0.55)),
+        "Base_Win_Rate":     (">=", cfg.get("min_base_win_rate",     0.45)),
+        "Tail_Concentration":("<=", cfg.get("max_tail_concentration", 0.80)),
+        "Consistency_Score": (">=", cfg.get("min_consistency_score", 0.60)),
+        "N_Iterations":      (">=", cfg.get("min_n_iterations",       5)),
+    }
+    before = len(df)
+    for col, (op, threshold) in filters.items():
+        if col not in df.columns:
+            continue
+        if op == ">=":
+            df = df[df[col].fillna(-1) >= threshold]
+        elif op == "<=":
+            df = df[df[col].fillna(999) <= threshold]
+    after = len(df)
+    if before != after:
+        print(f"  Quality filters removed {before - after} signals ({after} remain)")
+    return df
+
+
 def _stage_select_top_n(
-    all_signals_df: pd.DataFrame, top_n: int, prog: _Progress
+    all_signals_df: pd.DataFrame, top_n: int, cfg: dict, prog: _Progress
 ) -> tuple:
     prog.start(f"Selecting top {top_n} signals")
-    sort_col = "Sharpe_p50" if "Sharpe_p50" in all_signals_df.columns else all_signals_df.columns[2]
-    top_n_df = all_signals_df.sort_values(sort_col, ascending=False).head(top_n)
+    filtered_df = _apply_quality_filters(all_signals_df, cfg)
+    sort_col = "Sharpe_p50" if "Sharpe_p50" in filtered_df.columns else filtered_df.columns[2]
+    top_n_df = filtered_df.sort_values(sort_col, ascending=False).head(top_n)
     top_n_specs = [
         {"signal_name": r.signal_name, "target_ticker": r.target}
         for r in top_n_df.itertuples()
@@ -602,7 +626,7 @@ def main():
         )
 
         top_n_df, top_n_specs = _stage_select_top_n(
-            all_signals_df, cfg.get("top_n", 20), prog
+            all_signals_df, cfg.get("top_n", 50), cfg, prog
         )
 
         symphony = _stage_build_symphony(top_n_specs, prog)
