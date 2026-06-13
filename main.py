@@ -22,23 +22,6 @@ import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
-# Defaults — merged with config.py values then CLI overrides
-# ---------------------------------------------------------------------------
-
-_PIPELINE_DEFAULTS = {
-    "validation": {
-        "window_type": "walk_forward",
-        "train_size":  756,
-        "test_size":   63,
-    },
-    "top_n":            20,
-    "run_combos":       True,
-    "run_mc":           True,
-    "combo_batch_size": 500,
-    "top_k_for_combos": 50,
-}
-
 
 # ---------------------------------------------------------------------------
 # Progress printer
@@ -66,11 +49,9 @@ class _Progress:
 
 def _load_config(config_path: str | None) -> dict:
     """Merge pipeline defaults → config.py → optional JSON file."""
-    from config import RSI_SEARCH_CONFIG
+    from config import PIPELINE_CONFIG
 
-    cfg = {}
-    cfg.update(_PIPELINE_DEFAULTS)
-    cfg.update(RSI_SEARCH_CONFIG)
+    cfg = dict(PIPELINE_CONFIG)
 
     if config_path:
         with open(config_path) as f:
@@ -254,7 +235,7 @@ def _stage_run_validation(
 ) -> pd.DataFrame:
     from src.validation import run_validation
 
-    val_cfg = cfg.get("validation", _PIPELINE_DEFAULTS["validation"])
+    val_cfg = cfg.get("validation", {"window_type": "walk_forward", "train_size": 756, "test_size": 63})
     window_type = val_cfg.get("window_type", "walk_forward")
     window_config = {
         k: v for k, v in val_cfg.items() if k != "window_type"
