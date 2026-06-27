@@ -48,8 +48,22 @@ PIPELINE_CONFIG = {
         "CORP",
         "GLD",
     ],
-    # Tickers to hold while the signal is active. BIL is the safe-asset
-    # fallback — keep it in this list so it appears as an allocation option.
+    # Tickers to hold WHEN a signal fires (the true branch of each if-block).
+    # The pipeline runs a separate signal search for each ticker independently,
+    # so including multiple targets generates signals for each in parallel.
+    # Do NOT include safe_asset_ticker here — the else branch already holds it,
+    # and including it inflates Sharpe (near-zero volatility in the denominator).
+    #
+    # Example — leveraged Nasdaq trades in both directions:
+    #   ["TQQQ", "SQQQ"] finds signals predicting up-moves in each independently.
+    #   This is NOT a risk-on/risk-off setup; it is two separate signal searches.
+    #
+    # Example — risk-on / risk-off for the Nasdaq:
+    #   ["QQQ"] with safe_asset_ticker="BIL" and benchmark_ticker="SPY"
+    #   asks "when should I be in QQQ vs cash, and does that beat the market?"
+    #
+    # Example — high-probability volatility trade:
+    #   ["UVIX"] finds signals that predict volatility spikes (UVIX up-moves).
     "target_tickers": ["TQQQ", "SQQQ", "TLT", "BIL"],
     # What the strategy holds when NO signal is firing (the "else" branch).
     # This is the cash/safe-asset position — typically BIL or a short-duration
@@ -58,6 +72,11 @@ PIPELINE_CONFIG = {
     # What strategy performance is MEASURED AGAINST for Sharpe and other
     # relative metrics. Does not affect what the strategy holds — only affects
     # how results are evaluated. Set to SPY to ask "did this beat the market?"
+    #
+    # It is valid — and often correct — for safe_asset_ticker and
+    # benchmark_ticker to be the same ticker. If the null hypothesis is
+    # "I would otherwise be holding QQQ," set both to "QQQ" so the pipeline
+    # measures whether signals beat that baseline.
     "benchmark_ticker": "SPY",
     # -----------------------------------------------------------------------
     # RSI signals

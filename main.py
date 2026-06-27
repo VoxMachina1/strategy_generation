@@ -294,6 +294,10 @@ def _stage_tail_metrics(
         "tail_score":         "Tail_Score",
     }
 
+    if all_signals_df.empty:
+        prog.done()
+        return all_signals_df
+
     sig_idx = {name: i for i, name in enumerate(signal_names)}
     tail_rows = []
 
