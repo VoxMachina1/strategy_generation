@@ -19,6 +19,7 @@ verify_composer_output()     — round-trip verification against the original si
 
 import copy
 import re
+import uuid
 
 import numpy as np
 
@@ -73,16 +74,35 @@ def _fn_raw(label: str) -> str:
     return _FN_MAP[key]
 
 
+def _is_price_proxy(fn: str, window) -> bool:
+    """
+    Return True when the indicator is mathematically equivalent to current price.
+
+    SMA(1) == EMA(1) == today's close. Composer has a dedicated `current-price`
+    function that correctly labels itself with a ticker in the UI; emitting
+    `moving-average-price` with window=1 instead causes Composer to drop the
+    ticker from its condition label, producing "Moving Average of Price" with
+    no ticker shown.
+    """
+    return fn.upper() in ("SMA", "EMA") and window == 1
+
+
 def _lhs_expression(parsed: dict) -> dict:
     """
     Build a Composer lhs expression map from a parsed signal dict.
 
     For compound-condition encoding (binary nodes inside a compound).
+    SMA(1)/EMA(1) are emitted as current-price (no params) so Composer
+    renders the ticker correctly in its condition label.
     """
-    fn = _fn_raw(parsed["lhs_fn"])
+    lhs_fn = parsed["lhs_fn"]
+    lhs_window = parsed.get("lhs_window")
+    if _is_price_proxy(lhs_fn, lhs_window):
+        return {"fn": "current-price", "ticker": parsed["lhs_ticker"]}
+    fn = _fn_raw(lhs_fn)
     node: dict = {"fn": fn, "ticker": parsed["lhs_ticker"]}
-    if parsed.get("lhs_window"):
-        node["params"] = {"window": parsed["lhs_window"]}
+    if lhs_window:
+        node["params"] = {"window": lhs_window}
     return node
 
 
@@ -92,14 +112,18 @@ def _rhs_expression(parsed: dict, negate: bool = False) -> dict:
 
     For compound-condition encoding. negate=True is not applied here —
     comparator negation is handled at the binary-condition level.
+    SMA(1)/EMA(1) are emitted as current-price (no params).
     """
     if parsed["rhs_type"] == "fixed":
         return {"constant": parsed["rhs_value"]}
-    # indicator RHS
-    fn = _fn_raw(parsed["rhs_fn"])
+    rhs_fn = parsed["rhs_fn"]
+    rhs_window = parsed.get("rhs_window")
+    if _is_price_proxy(rhs_fn, rhs_window):
+        return {"fn": "current-price", "ticker": parsed["rhs_ticker"]}
+    fn = _fn_raw(rhs_fn)
     node: dict = {"fn": fn, "ticker": parsed["rhs_ticker"]}
-    if parsed.get("rhs_window"):
-        node["params"] = {"window": parsed["rhs_window"]}
+    if rhs_window:
+        node["params"] = {"window": rhs_window}
     return node
 
 
@@ -138,26 +162,40 @@ def _flat_if_child_fields(parsed: dict, node: dict) -> None:
 
     Flat format fields:
         comparator, lhs-fn, lhs-val, lhs-fn-params (if window present),
-        rhs-fixed-value?, rhs-val / rhs-fn / rhs-fn-params / rhs-fn-lhs-val
+        rhs-fixed-value?, rhs-val / rhs-fn / rhs-fn-params / rhs-val
     """
     node["comparator"] = parsed["comparator"]
 
-    # LHS
-    node["lhs-fn"]  = _fn_raw(parsed["lhs_fn"])
-    node["lhs-val"] = parsed["lhs_ticker"]
-    if parsed.get("lhs_window"):
-        node["lhs-fn-params"] = {"window": parsed["lhs_window"]}
+    # LHS — SMA(1)/EMA(1) → current-price (no window param)
+    lhs_fn = parsed["lhs_fn"]
+    lhs_window = parsed.get("lhs_window")
+    if _is_price_proxy(lhs_fn, lhs_window):
+        node["lhs-fn"]  = "current-price"
+        node["lhs-val"] = parsed["lhs_ticker"]
+    else:
+        node["lhs-fn"]  = _fn_raw(lhs_fn)
+        node["lhs-val"] = parsed["lhs_ticker"]
+        if lhs_window:
+            node["lhs-fn-params"] = {"window": lhs_window}
 
     # RHS
     if parsed["rhs_type"] == "fixed":
         node["rhs-fixed-value?"] = True
-        node["rhs-val"]          = parsed["rhs_value"]
+        # Composer expects fixed thresholds as strings ("50", not 50.0)
+        v = parsed["rhs_value"]
+        node["rhs-val"] = str(int(v)) if v == int(v) else str(v)
     else:
-        node["rhs-fixed-value?"]    = False
-        node["rhs-fn"]              = _fn_raw(parsed["rhs_fn"])
-        node["rhs-fn-lhs-val"]      = parsed["rhs_ticker"]
-        if parsed.get("rhs_window"):
-            node["rhs-fn-params"]   = {"window": parsed["rhs_window"]}
+        rhs_fn = parsed["rhs_fn"]
+        rhs_window = parsed.get("rhs_window")
+        node["rhs-fixed-value?"] = False
+        if _is_price_proxy(rhs_fn, rhs_window):
+            node["rhs-fn"]        = "current-price"
+            node["rhs-val"] = parsed["rhs_ticker"]
+        else:
+            node["rhs-fn"]         = _fn_raw(rhs_fn)
+            node["rhs-val"] = parsed["rhs_ticker"]
+            if rhs_window:
+                node["rhs-fn-params"] = {"window": rhs_window}
 
 
 def signal_to_if_child(
@@ -183,24 +221,22 @@ def signal_to_if_child(
     parsed = parse_signal_name(signal_name)
 
     true_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": False,
     }
     _flat_if_child_fields(parsed, true_child)
-    true_child["children"] = [_asset_node(target_ticker)]
+    true_child["condition"] = _binary_condition(parsed)
+    true_child["children"]  = [_asset_node(target_ticker)]
 
     else_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": True,
-        "children":          [_asset_node(safe_asset)],
+        "children":           [_asset_node(safe_asset)],
     }
 
-    return {
-        "step":     "if",
-        "children": [true_child, else_child],
-    }
+    return _if_node([true_child, else_child])
 
 
 # ---------------------------------------------------------------------------
@@ -254,24 +290,21 @@ def combo_to_if_child(
     }
 
     true_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": False,
         "condition":          condition,
         "children":           [_asset_node(target_ticker)],
     }
 
     else_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": True,
-        "children":          [_asset_node(safe_asset)],
+        "children":           [_asset_node(safe_asset)],
     }
 
-    return {
-        "step":     "if",
-        "children": [true_child, else_child],
-    }
+    return _if_node([true_child, else_child])
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +400,29 @@ def precond_expr_to_composer_condition(expr: str) -> dict:
 
 def _asset_node(ticker: str) -> dict:
     """Build a Composer asset node."""
-    return {"step": "asset", "ticker": ticker}
+    return {
+        "step":   "asset",
+        "id":     str(uuid.uuid4()),
+        "ticker": ticker,
+    }
+
+
+def _if_node(children: list) -> dict:
+    """Build a Composer if node (the outer condition block)."""
+    return {
+        "step":     "if",
+        "id":       str(uuid.uuid4()),
+        "children": children,
+    }
+
+
+def _wt_cash_equal_node(children: list) -> dict:
+    """Build a Composer wt-cash-equal node."""
+    return {
+        "step":     "wt-cash-equal",
+        "id":       str(uuid.uuid4()),
+        "children": children,
+    }
 
 
 def build_symphony(
@@ -419,14 +474,13 @@ def build_symphony(
         if_blocks.append(if_node)
 
     return {
-        "step":      "root",
-        "rebalance": "daily",
-        "children": [
-            {
-                "step":     "wt-cash-equal",
-                "children": if_blocks,
-            }
-        ],
+        "step":                     "root",
+        "id":                       str(uuid.uuid4()),
+        "name":                     "Generated Symphony",
+        "description":              "",
+        "rebalance":                "daily",
+        "rebalance-corridor-width": 0.0,
+        "children":                 [_wt_cash_equal_node(if_blocks)],
     }
 
 
@@ -456,22 +510,19 @@ def _wrap_with_preconditions(
         }
 
     true_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": False,
         "condition":          condition,
         "children":           [inner_if],
     }
     else_child: dict = {
-        "step":              "if-child",
-        "collapsed?":        False,
+        "step":               "if-child",
+        "id":                 str(uuid.uuid4()),
         "is-else-condition?": True,
-        "children":          [_asset_node(safe_asset)],
+        "children":           [_asset_node(safe_asset)],
     }
-    return {
-        "step":     "if",
-        "children": [true_child, else_child],
-    }
+    return _if_node([true_child, else_child])
 
 
 # ---------------------------------------------------------------------------
@@ -576,29 +627,33 @@ def insert_into_symphony(
 
         new_true_child: dict = {
             "step":               "if-child",
-            "collapsed?":         False,
+            "id":                 str(uuid.uuid4()),
             "is-else-condition?": False,
-            "children":           [{"step": "wt-cash-equal", "children": current_payload}],
         }
         # Copy condition fields (flat or compound) onto the new true-child
         for key in ("lhs-fn", "lhs-val", "lhs-fn-params", "comparator",
-                    "rhs-fixed-value?", "rhs-val", "rhs-fn", "rhs-fn-lhs-val",
+                    "rhs-fixed-value?", "rhs-val", "rhs-fn",
                     "rhs-fn-params", "condition"):
             if key in true_child_src:
                 new_true_child[key] = true_child_src[key]
+        new_true_child["children"] = [_wt_cash_equal_node(current_payload)]
 
         new_else_child: dict = {
             "step":               "if-child",
-            "collapsed?":         False,
+            "id":                 str(uuid.uuid4()),
             "is-else-condition?": True,
             "children":           [_asset_node(safe_asset)],
         }
-        current_payload = [{"step": "if", "children": [new_true_child, new_else_child]}]
+        current_payload = [_if_node([new_true_child, new_else_child])]
 
     return {
-        "step":      "root",
-        "rebalance": existing_json.get("rebalance", "daily"),
-        "children":  [{"step": "wt-cash-equal", "children": current_payload}],
+        "step":                     "root",
+        "id":                       existing_json.get("id", str(uuid.uuid4())),
+        "name":                     existing_json.get("name", "Generated Symphony"),
+        "description":              existing_json.get("description", ""),
+        "rebalance":                existing_json.get("rebalance", "daily"),
+        "rebalance-corridor-width": existing_json.get("rebalance-corridor-width", 0.0),
+        "children":                 [_wt_cash_equal_node(current_payload)],
     }
 
 
@@ -709,6 +764,15 @@ def verify_composer_output(
         target_rhs  = parsed.get("rhs_value")
         target_win  = parsed.get("lhs_window")
 
+        # rhs-val is serialised as a string ("30") — compare as float after coercion
+        def _rhs_matches(node_val, target):
+            if target is None:
+                return False
+            try:
+                return float(node_val) == float(target)
+            except (TypeError, ValueError):
+                return False
+
         match_node = None
         for node in flat_nodes:
             if (
@@ -716,7 +780,7 @@ def verify_composer_output(
                 and node.get("lhs-val") == target_val
                 and node.get("comparator") == target_comp
                 and node.get("rhs-fixed-value?", False)
-                and node.get("rhs-val") == target_rhs
+                and _rhs_matches(node.get("rhs-val"), target_rhs)
                 and (node.get("lhs-fn-params") or {}).get("window") == target_win
             ):
                 match_node = node

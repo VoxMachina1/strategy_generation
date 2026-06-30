@@ -152,18 +152,22 @@ class TestWriteSymphonyJson:
 
     def test_round_trip_fidelity(self, tmp_path):
         original = {
-            "step": "root",
-            "rebalance": "daily",
-            "children": [{"step": "wt-cash-equal", "children": [
-                {"step": "if", "children": [
-                    {"step": "if-child", "is-else-condition?": False,
+            "step": "root", "id": "abc", "name": "Test",
+            "description": "", "rebalance": "daily",
+            "rebalance-corridor-width": 0.0,
+            "children": [{"step": "wt-cash-equal", "id": "def", "children": [
+                {"step": "if", "id": "ghi", "children": [
+                    {"step": "if-child", "id": "jkl", "is-else-condition?": False,
                      "lhs-fn": "relative-strength-index", "lhs-val": "SPY",
                      "lhs-fn-params": {"window": 10}, "comparator": "lt",
-                     "rhs-fixed-value?": True, "rhs-val": 30.0,
-                     "collapsed?": False,
-                     "children": [{"step": "asset", "ticker": "TQQQ"}]},
-                    {"step": "if-child", "is-else-condition?": True, "collapsed?": False,
-                     "children": [{"step": "asset", "ticker": "BIL"}]},
+                     "rhs-fixed-value?": True, "rhs-val": "30",
+                     "condition": {"condition-type": "binary", "comparator": "lt",
+                                   "lhs": {"fn": "relative-strength-index", "ticker": "SPY",
+                                           "params": {"window": 10}},
+                                   "rhs": {"constant": 30.0}},
+                     "children": [{"step": "asset", "id": "mno", "ticker": "TQQQ"}]},
+                    {"step": "if-child", "id": "pqr", "is-else-condition?": True,
+                     "children": [{"step": "asset", "id": "stu", "ticker": "BIL"}]},
                 ]},
             ]}],
         }

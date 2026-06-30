@@ -22,6 +22,7 @@ Operators: AND, OR, A_AND_NOT_B, B_AND_NOT_A
 
 import itertools
 import re
+from collections.abc import Callable
 
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
@@ -149,6 +150,7 @@ def run_combo_backtests(
     date_index: np.ndarray,
     top_k_for_combos: int = 500,
     config: dict = None,
+    progress_fn: "Callable[[int, int, int], None] | None" = None,
 ) -> list:
     """
     Generate and backtest all pairwise combos in batches.
@@ -218,8 +220,10 @@ def run_combo_backtests(
 
     # --- Batch loop ----------------------------------------------------------
     all_results = []
+    total_triplets = len(all_triplets)
+    n_batches = (total_triplets + batch_size - 1) // batch_size
 
-    for batch_start in range(0, len(all_triplets), batch_size):
+    for batch_num, batch_start in enumerate(range(0, total_triplets, batch_size)):
         batch = all_triplets[batch_start : batch_start + batch_size]
 
         # Materialise combo columns for this batch
@@ -245,5 +249,8 @@ def run_combo_backtests(
 
         # Release combo matrix immediately — do not accumulate
         del combo_matrix
+
+        if progress_fn is not None:
+            progress_fn(batch_num + 1, n_batches, len(all_results))
 
     return all_results

@@ -44,7 +44,7 @@ def smart_sharpe(r: np.ndarray, annual: float = 252) -> float:
         if np.isnan(ac):
             ac = 0.0
         sum_ac += ac
-    denom = max(1.0 + 2 * sum_ac, 1e-9)
+    denom = max(abs(1.0 + 2 * sum_ac), 1e-9)
     return float(s / np.sqrt(denom))
 
 

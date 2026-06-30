@@ -109,7 +109,6 @@ def test_generate_signal_matrix_shape():
         "rsi_comparators": ["gt"],
         "sma_windows": [],
         "ema_windows": [],
-        "cross_tickers": [],
     }
     specs = generate_signal_specs(config)
     assert len(specs) == 2  # SPY×TQQQ, QQQ×TQQQ
@@ -342,3 +341,102 @@ def test_bband_signal_evaluates_correctly():
 
     assert matrix.shape == (300, len(specs))
     assert matrix.dtype == bool
+
+
+# ---------------------------------------------------------------------------
+# SMA / EMA crossover signals using signal_tickers for both sides
+# ---------------------------------------------------------------------------
+
+def test_sma_specs_use_signal_tickers_for_rhs():
+    """SMA crossover RHS draws from signal_tickers, not a separate cross_tickers key."""
+    cfg = {
+        "signal_tickers": ["SPY", "QQQ"],
+        "target_tickers": ["TQQQ"],
+        "sma_windows": [20, 50],
+        "ema_windows": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "rsi_comparators": [],
+    }
+    specs = generate_signal_specs(cfg)
+    sma_specs = [s for s in specs if s.lhs_fn == "SMA"]
+    rhs_tickers = {s.rhs_ticker for s in sma_specs}
+    assert "SPY" in rhs_tickers
+    assert "QQQ" in rhs_tickers
+
+
+def test_sma_period1_specs_generated():
+    """SMA(1) specs are generated when 1 is in sma_windows (current-price proxy)."""
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["TQQQ"],
+        "sma_windows": [1, 200],
+        "ema_windows": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "rsi_comparators": [],
+    }
+    specs = generate_signal_specs(cfg)
+    names = [s.name for s in specs]
+    assert any("SMA_1_SPY_GT_SMA_200_SPY" in n for n in names), names
+
+
+def test_sma_self_comparison_excluded():
+    """SMA(w, ticker) vs SMA(w, ticker) is always True and must be excluded."""
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["TQQQ"],
+        "sma_windows": [1, 20],
+        "ema_windows": [],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "rsi_comparators": [],
+    }
+    specs = generate_signal_specs(cfg)
+    for s in specs:
+        assert not (s.lhs_ticker == s.rhs_ticker and s.lhs_window == s.rhs_window), (
+            f"Self-comparison spec found: {s.name}"
+        )
+
+
+def test_ema_period1_specs_generated():
+    """EMA(1) specs are generated when 1 is in ema_windows (current-price proxy)."""
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["TQQQ"],
+        "sma_windows": [],
+        "ema_windows": [1, 26],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "rsi_comparators": [],
+    }
+    specs = generate_signal_specs(cfg)
+    names = [s.name for s in specs]
+    assert any("EMA_1_SPY_GT_EMA_26_SPY" in n for n in names), names
+
+
+def test_sma_ema_evaluate_correctly():
+    """SMA and EMA crossover specs produce valid boolean columns end-to-end."""
+    import pandas as pd
+    from src.data.cache import build_indicator_cache
+
+    price_df = _make_price_df()
+    cfg = {
+        "signal_tickers": ["SPY"],
+        "target_tickers": ["BIL"],
+        "sma_windows": [1, 20],
+        "ema_windows": [1, 12],
+        "rsi_windows": [],
+        "rsi_thresholds": [],
+        "rsi_comparators": [],
+    }
+    specs = generate_signal_specs(cfg)
+    assert len(specs) > 0
+    required = derive_required_indicators(specs)
+    cache = build_indicator_cache(price_df, required)
+    date_index = price_df.index.to_numpy()
+    matrix, names, _ = generate_signal_matrix(specs, cache, date_index)
+
+    assert matrix.shape == (300, len(specs))
+    assert matrix.dtype == bool
+    assert not matrix[0].any(), "Day 0 (warmup) should be all False"

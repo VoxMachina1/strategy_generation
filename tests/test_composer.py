@@ -68,17 +68,21 @@ class TestSignalToIfChild:
         node = signal_to_if_child("RSI_10_SPY_LT_30", "TQQQ")
         true_c = node["children"][0]
         assert true_c["rhs-fixed-value?"] is True
-        assert true_c["rhs-val"] == 30.0
+        assert true_c["rhs-val"] == "30"
 
     def test_true_branch_has_target(self):
         node = signal_to_if_child("RSI_14_SPY_GT_70", "TQQQ", safe_asset="BIL")
         true_c = node["children"][0]
-        assert true_c["children"][0] == {"step": "asset", "ticker": "TQQQ"}
+        asset = true_c["children"][0]
+        assert asset["step"] == "asset"
+        assert asset["ticker"] == "TQQQ"
 
     def test_else_branch_has_safe_asset(self):
         node = signal_to_if_child("RSI_14_SPY_GT_70", "TQQQ", safe_asset="SGOV")
         else_c = node["children"][1]
-        assert else_c["children"][0] == {"step": "asset", "ticker": "SGOV"}
+        asset = else_c["children"][0]
+        assert asset["step"] == "asset"
+        assert asset["ticker"] == "SGOV"
 
     def test_sma_fn_name(self):
         node = signal_to_if_child("SMA_20_QQQ_GT_SMA_20_QQQ", "TQQQ")
@@ -95,7 +99,7 @@ class TestSignalToIfChild:
         node = signal_to_if_child("RSI_14_SPY_GT_70", "TQQQ")
         true_c = node["children"][0]
         assert true_c["comparator"] == "gt"
-        assert true_c["rhs-val"] == 70.0
+        assert true_c["rhs-val"] == "70"
 
 
 # ---------------------------------------------------------------------------

@@ -167,6 +167,17 @@ Currently all signals must use tradeable ETF tickers (Tiingo data layer). VIX, y
 
 All tools use Tiingo adjusted close (and OHLC where needed). The data layer is being extended to fetch `adjOpen`, `adjHigh`, `adjLow`, `adjClose` — required for true ATR computation. Old close-only CSVs remain backward-compatible.
 
+### Extended dataset: ETF backfill via index substitution (planned integration)
+
+A future integration will allow tickers that don't have a long enough live history to be extended backwards using substitute index data (e.g., substituting the underlying index's return series for the years before the ETF's inception date). When that integration is active, the pre-inception ("extended") portion of any ticker's price series is **treated as holdout data** on equal footing with the post-`holdout_cutoff` period.
+
+Rationale: the extended period is synthetic — it was not tradeable and may exhibit survivorship or reconstruction bias. Signals should be discovered on the live-history training window only. The extended period then serves as an independent robustness check, just as the holdout period does.
+
+Implementation note for when this integration lands:
+- The data layer should tag each date in the price series with `origin: "live" | "extended"`.
+- The holdout mask should be `origin == "extended" OR date > holdout_cutoff`.
+- All three passes of the pipeline must exclude extended-period dates from training regardless of how far back the series goes.
+
 ### MOC execution timing is verified correct
 
 Composer evaluates live price at 3:50PM EST and trades at the 4PM close. Signal at day t → return from close t to close t+1. `shift(-1)` on returns is correct. The `EXECUTION_MODE = "MOC"` setting must not be changed.

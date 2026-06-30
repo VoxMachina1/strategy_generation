@@ -227,6 +227,53 @@ def test_aggregate_oos_results_empty():
     assert aggregate_oos_results(pd.DataFrame()).empty
 
 
+def _make_results_row(signal_name, target, window, sortino=0.6, calmar=0.3):
+    return {
+        "signal_name": signal_name, "target": target,
+        "window_iteration": window, "test_start_date": None, "test_end_date": None,
+        "sharpe": 0.5, "sortino": sortino, "calmar": calmar,
+        "total_return": 0.02, "max_drawdown": 0.1,
+        "cagr": 0.05, "omega": 1.2, "win_rate": 0.55,
+        "profit_factor": 1.3, "recovery_factor": 1.1,
+        "time_in_market": 0.5, "n_signal_days": 60.0, "smart_sharpe": 0.4,
+    }
+
+
+def test_aggregate_oos_results_inf_sortino_calmar():
+    """inf sortino/calmar (zero-denominator metrics) must not raise RuntimeWarning
+    or produce inf in the aggregated output."""
+    rows = [
+        _make_results_row("SIG", "T", 0, sortino=float("inf"), calmar=float("inf")),
+        _make_results_row("SIG", "T", 1, sortino=1.0, calmar=0.5),
+        _make_results_row("SIG", "T", 2, sortino=0.5, calmar=0.2),
+    ]
+    df = pd.DataFrame(rows)
+    agg = aggregate_oos_results(df)
+    assert len(agg) == 1
+    assert np.isfinite(agg.iloc[0]["Sortino_p50"])
+    assert np.isfinite(agg.iloc[0]["Calmar_p50"])
+
+
+def test_aggregate_oos_results_all_inf_sortino():
+    """All-inf sortino should yield nan without crashing.
+
+    nanpercentile over all-nan produces an "All-NaN slice" RuntimeWarning which is
+    expected here and suppressed for this test only.
+    """
+    rows = [
+        _make_results_row("SIG", "T", i, sortino=float("inf"), calmar=float("inf"))
+        for i in range(3)
+    ]
+    df = pd.DataFrame(rows)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        agg = aggregate_oos_results(df)
+    assert len(agg) == 1
+    # nanpercentile of all-nan returns nan — this is acceptable for a degenerate window set.
+    assert np.isnan(agg.iloc[0]["Sortino_p50"]) or np.isfinite(agg.iloc[0]["Sortino_p50"])
+
+
 # ---------------------------------------------------------------------------
 # SC-4: compute_regime_stats
 # ---------------------------------------------------------------------------

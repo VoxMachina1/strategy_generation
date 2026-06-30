@@ -14,6 +14,8 @@ aggregate_oos_results()          — reduce per-window results to per-signal sta
 compute_regime_stats()           — contiguous "on" block analysis per signal
 """
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 
@@ -144,25 +146,33 @@ def run_validation(
     window_type: str,
     window_config: dict,
     n_workers: int = None,
+    precondition_mask: np.ndarray | None = None,
+    progress_fn: Callable[[str, int, int], None] | None = None,
 ) -> pd.DataFrame:
     """
     Run backtesting across all validation windows for all target tickers.
 
     Parameters
     ----------
-    signal_matrix   : (n_days, n_signals) bool
-    signal_names    : list[str], parallel to signal_matrix columns
-    signal_metadata : list[SignalSpec], parallel to signal_matrix columns
-    price_df        : pd.DataFrame — close prices; columns include target_tickers;
-                      index is a DatetimeIndex aligned with signal_matrix rows
-    target_tickers  : list[str] — tickers to compute returns for
-    bil_returns     : np.ndarray (n_days,) — BIL daily returns
-    window_type     : "walk_forward", "expanding", or "rolling"
-    window_config   : dict — keys depend on window_type:
-                      walk_forward: {"train_size", "test_size"}
-                      expanding:    {"initial_train", "test_size"}
-                      rolling:      {"train_size", "test_size", "step"}
-    n_workers       : process pool size (defaults to cpu_count - 1)
+    signal_matrix       : (n_days, n_signals) bool
+    signal_names        : list[str], parallel to signal_matrix columns
+    signal_metadata     : list[SignalSpec], parallel to signal_matrix columns
+    price_df            : pd.DataFrame — close prices; columns include target_tickers;
+                          index is a DatetimeIndex aligned with signal_matrix rows
+    target_tickers      : list[str] — tickers to compute returns for
+    bil_returns         : np.ndarray (n_days,) — BIL daily returns
+    window_type         : "walk_forward", "expanding", or "rolling"
+    window_config       : dict — keys depend on window_type:
+                          walk_forward: {"train_size", "test_size"}
+                          expanding:    {"initial_train", "test_size"}
+                          rolling:      {"train_size", "test_size", "step"}
+    n_workers           : process pool size (defaults to cpu_count - 1)
+    precondition_mask   : np.ndarray, shape (n_days,), dtype bool, optional —
+                          when provided, each validation window's evaluation is
+                          restricted to precondition-active days only
+    progress_fn         : optional callable(ticker: str, completed: int, total: int) —
+                          called after each window completes for a given ticker;
+                          enables streaming per-window progress from the caller
 
     Returns
     -------
@@ -220,6 +230,10 @@ def run_validation(
         target_returns_moc = prepare_moc_returns(raw_returns)
 
         # Parallel backtest across all windows
+        _ticker_progress_fn = (
+            (lambda done, total, t=ticker: progress_fn(t, done, total))
+            if progress_fn is not None else None
+        )
         window_results = run_parallel_backtests(
             test_window_specs,
             signal_matrix,
@@ -227,6 +241,8 @@ def run_validation(
             bil_returns,
             date_index,
             n_workers=n_workers,
+            precondition_mask=precondition_mask,
+            progress_fn=_ticker_progress_fn,
         )
 
         metric_keys = [
@@ -281,11 +297,23 @@ def aggregate_oos_results(results_df: pd.DataFrame) -> pd.DataFrame:
     agg_rows = []
 
     for (signal_name, target), group in results_df.groupby(["signal_name", "target"]):
-        sharpe_vals = group["sharpe"].to_numpy()
-        ret_vals = group["total_return"].to_numpy()
-        dd_vals = group["max_drawdown"].to_numpy()
-        sortino_vals = group["sortino"].to_numpy()
-        calmar_vals = group["calmar"].to_numpy()
+        # Exclude windows where the precondition never fired — zero-day windows
+        # produce all-zero metrics that distort percentiles toward zero and
+        # make "no data" indistinguishable from "traded and lost."
+        valid = group[group["n_signal_days"] > 0]
+        if valid.empty:
+            continue
+
+        sharpe_vals = valid["sharpe"].to_numpy()
+        ret_vals = valid["total_return"].to_numpy()
+        dd_vals = valid["max_drawdown"].to_numpy()
+        # calmar/sortino can be +inf when denominator is zero; replace with nan
+        # so nanpercentile ignores them rather than propagating inf into results.
+        # profit_factor/recovery_factor are also inf-capable but not aggregated here.
+        _sortino = valid["sortino"].to_numpy()
+        sortino_vals = np.where(np.isinf(_sortino), np.nan, _sortino)
+        _calmar = valid["calmar"].to_numpy()
+        calmar_vals = np.where(np.isinf(_calmar), np.nan, _calmar)
 
         n = len(sharpe_vals)
 
@@ -308,8 +336,8 @@ def aggregate_oos_results(results_df: pd.DataFrame) -> pd.DataFrame:
             "Return_p50":       float(np.percentile(ret_vals, 50)),
             "Return_p10":       float(np.percentile(ret_vals, 10)),
             "MaxDD_p90":        float(np.percentile(dd_vals, 90)),
-            "Sortino_p50":      float(np.percentile(sortino_vals, 50)),
-            "Calmar_p50":       float(np.percentile(calmar_vals, 50)),
+            "Sortino_p50":      float(np.nanpercentile(sortino_vals, 50)),
+            "Calmar_p50":       float(np.nanpercentile(calmar_vals, 50)),
             "Consistency_Score": float((sharpe_vals > 0).mean()),
             "N_Iterations":     n,
         })

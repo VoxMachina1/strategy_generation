@@ -63,7 +63,7 @@ def _load_config(config_path: str | None) -> dict:
 
 def _apply_cli_overrides(cfg: dict, args: argparse.Namespace) -> dict:
     if args.workers is not None:
-        cfg["n_workers"] = args.workers
+        cfg["workers"] = args.workers
     if args.window_type is not None:
         cfg.setdefault("validation", {})["window_type"] = args.window_type
     if args.top_n is not None:
@@ -96,10 +96,14 @@ def _stage_fetch_data(cfg: dict, prog: _Progress) -> tuple:
         print(f"\nError: {e}")
         sys.exit(1)
 
+    dl_cfg = cfg.get("dual_layer", {})
+    defense_tickers = dl_cfg.get("defensive_target_tickers", []) if dl_cfg.get("enabled") else []
     extra = [cfg["benchmark_ticker"]]
     if cfg.get("safe_asset_ticker"):
         extra.append(cfg["safe_asset_ticker"])
-    all_tickers = list(dict.fromkeys(cfg["signal_tickers"] + cfg["target_tickers"] + extra))
+    all_tickers = list(dict.fromkeys(
+        cfg["signal_tickers"] + cfg["target_tickers"] + defense_tickers + extra
+    ))
     from config import DATA_DIR
     data_dir = DATA_DIR
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +114,26 @@ def _stage_fetch_data(cfg: dict, prog: _Progress) -> tuple:
 
     prog.done()
     return price_df, dates
+
+
+def _stage_split_holdout(price_df: pd.DataFrame, cfg: dict) -> tuple:
+    """
+    Split price_df into (train_df, holdout_df) at the configured holdout_cutoff.
+
+    Returns (price_df, None) when dual_layer is disabled — the full dataset is
+    used for training and no holdout evaluation is performed.
+    """
+    dl_cfg = cfg.get("dual_layer", {})
+    if not dl_cfg.get("enabled"):
+        return price_df, None
+
+    cutoff = pd.Timestamp(dl_cfg["holdout_cutoff"])
+    train_df = price_df[price_df.index < cutoff]
+    holdout_df = price_df[price_df.index >= cutoff]
+
+    print(f"  Holdout split: {len(train_df)} train days / {len(holdout_df)} holdout days"
+          f" (cutoff {dl_cfg['holdout_cutoff']})")
+    return train_df, holdout_df
 
 
 def _normalise_cfg_for_signals(cfg: dict) -> dict:
@@ -142,6 +166,14 @@ def _stage_generate_signal_matrix(
 
     prog.start("Generating signal matrix")
     specs = generate_signal_specs(_normalise_cfg_for_signals(cfg))
+
+    # Spec breakdown by indicator type
+    by_type: dict[str, int] = {}
+    for s in specs:
+        by_type[s.lhs_fn] = by_type.get(s.lhs_fn, 0) + 1
+    breakdown = "  |  ".join(f"{fn}: {n:,}" for fn, n in sorted(by_type.items()))
+    print(f"\n       {len(specs):,} specs total  ({breakdown})")
+
     date_index = price_df.index.to_numpy()
     signal_matrix, signal_names, signal_metadata = generate_signal_matrix(
         specs, indicator_cache, date_index
@@ -151,7 +183,7 @@ def _stage_generate_signal_matrix(
         print("\nError: signal matrix is empty — no signals generated. Check config.")
         sys.exit(1)
     prog.done()
-    print(f"       {signal_matrix.shape[1]} signals × {signal_matrix.shape[0]} days")
+    print(f"       {signal_matrix.shape[1]:,} signals × {signal_matrix.shape[0]:,} days")
     return signal_matrix, signal_names, signal_metadata, date_index
 
 
@@ -219,19 +251,42 @@ def _stage_run_combos(
     date_index: np.ndarray,
     prog: _Progress,
 ) -> pd.DataFrame:
+    import math
     from src.combos import run_combo_backtests
 
-    prog.start("Generating and backtesting combos")
+    top_k = cfg.get("top_k_for_combos", 50)
+    batch_size = cfg.get("combo_batch_size", 500)
+    pool_size = min(top_k, signal_matrix.shape[1])
+    n_combos = math.comb(pool_size, 2) * 4
+    n_batches = (n_combos + batch_size - 1) // batch_size
+    n_targets = len(target_returns_dict)
+
+    prog.start(
+        f"Combos  (pool={pool_size} signals → {n_combos:,} combos × {n_targets} tickers"
+        f" = {n_batches} batches)"
+    )
+
+    def _combo_progress(batch_num: int, total_batches: int, n_results: int):
+        pct = batch_num / total_batches * 100
+        print(
+            f"\r       batch {batch_num}/{total_batches} ({pct:.0f}%)  "
+            f"{n_results:,} results so far   ",
+            end="",
+            flush=True,
+        )
+
     combo_rows = run_combo_backtests(
         signal_matrix, signal_names, signal_metadata,
         target_returns_dict, bil_returns, date_index,
-        top_k_for_combos=cfg.get("top_k_for_combos", 50),
-        config={"combo_batch_size": cfg.get("combo_batch_size", 500)},
+        top_k_for_combos=top_k,
+        config={"combo_batch_size": batch_size},
+        progress_fn=_combo_progress,
     )
+    print()  # newline after the \r progress line
     combo_df = pd.DataFrame(combo_rows) if combo_rows else pd.DataFrame()
     prog.done()
     if not combo_df.empty:
-        print(f"       {len(combo_df)} combo results")
+        print(f"       {len(combo_df):,} combo results")
     return combo_df
 
 
@@ -244,22 +299,76 @@ def _stage_run_validation(
     bil_returns: np.ndarray,
     prog: _Progress,
 ) -> pd.DataFrame:
-    from src.validation import run_validation
+    from src.validation import (
+        run_validation,
+        generate_walk_forward_windows,
+        generate_expanding_windows,
+        generate_rolling_windows,
+    )
 
     val_cfg = cfg.get("validation", {"window_type": "walk_forward", "train_size": 756, "test_size": 63})
     window_type = val_cfg.get("window_type", "walk_forward")
-    window_config = {
-        k: v for k, v in val_cfg.items() if k != "window_type"
-    }
+    window_config = {k: v for k, v in val_cfg.items() if k != "window_type"}
 
-    prog.start(f"OOS validation ({window_type})")
+    n_days = signal_matrix.shape[0]
+    if window_type == "walk_forward":
+        n_windows = len(generate_walk_forward_windows(
+            n_days, window_config["train_size"], window_config["test_size"]
+        ))
+    elif window_type == "expanding":
+        n_windows = len(generate_expanding_windows(
+            n_days, window_config["initial_train"], window_config["test_size"]
+        ))
+    else:
+        n_windows = len(generate_rolling_windows(
+            n_days, window_config["train_size"], window_config["test_size"], window_config["step"]
+        ))
+
+    target_tickers = cfg["target_tickers"]
+    n_targets = len(target_tickers)
+    prog.start(
+        f"OOS validation ({window_type})"
+        f"  {n_windows} windows × {n_targets} tickers = {n_windows * n_targets} backtests"
+    )
+
+    _ticker_state: dict = {"current": "", "t0": 0.0}
+
+    def _validation_progress(ticker: str, done: int, total: int):
+        import time as _time
+        if ticker != _ticker_state["current"]:
+            if _ticker_state["current"]:
+                elapsed = _time.time() - _ticker_state["t0"]
+                print(
+                    f"\r       {_ticker_state['current']:8s}  {total}/{total} windows"
+                    f"  ({elapsed:.1f}s)              "
+                )
+            _ticker_state["current"] = ticker
+            _ticker_state["t0"] = _time.time()
+        pct = done / total * 100
+        print(
+            f"\r       {ticker:8s}  {done}/{total} windows  ({pct:.0f}%)   ",
+            end="",
+            flush=True,
+        )
+
     oos_raw_df = run_validation(
         signal_matrix, signal_names, signal_metadata,
-        price_df, cfg["target_tickers"], bil_returns,
+        price_df, target_tickers, bil_returns,
         window_type=window_type,
         window_config=window_config,
-        n_workers=cfg.get("n_workers"),
+        n_workers=cfg.get("workers", cfg.get("n_workers")),
+        progress_fn=_validation_progress,
     )
+
+    # Print completion line for the last ticker
+    if _ticker_state["current"]:
+        import time as _time
+        elapsed = _time.time() - _ticker_state["t0"]
+        print(
+            f"\r       {_ticker_state['current']:8s}  {n_windows}/{n_windows} windows"
+            f"  ({elapsed:.1f}s)              "
+        )
+
     prog.done()
     return oos_raw_df
 
@@ -445,7 +554,7 @@ def _stage_monte_carlo(
         ))
 
     n_tasks = len(tasks)
-    n_workers = cfg.get("mc_workers", min(4, n_tasks or 1))
+    n_workers = cfg.get("workers", cfg.get("mc_workers", min(4, n_tasks or 1)))
     prog.start(f"Monte Carlo simulation (0/{n_tasks})")
 
     mc_results = []
@@ -606,12 +715,16 @@ def main():
     try:
         price_df, dates = _stage_fetch_data(cfg, prog)
 
-        indicator_cache = _stage_build_indicator_cache(cfg, price_df, prog)
+        # Holdout split — train_df is used for all three passes.
+        # holdout_df is reserved for final validation after assembly.
+        train_df, holdout_df = _stage_split_holdout(price_df, cfg)
+
+        indicator_cache = _stage_build_indicator_cache(cfg, train_df, prog)
 
         signal_matrix, signal_names, signal_metadata, date_index = \
-            _stage_generate_signal_matrix(cfg, price_df, indicator_cache, prog)
+            _stage_generate_signal_matrix(cfg, train_df, indicator_cache, prog)
 
-        target_returns_dict, bil_returns = _stage_compute_returns(cfg, price_df, prog)
+        target_returns_dict, bil_returns = _stage_compute_returns(cfg, train_df, prog)
 
         _stage_backtest_is(cfg, signal_matrix, signal_names,
                            target_returns_dict, bil_returns, date_index, prog)
@@ -625,7 +738,7 @@ def main():
 
         oos_raw_df = _stage_run_validation(
             cfg, signal_matrix, signal_names, signal_metadata,
-            price_df, bil_returns, prog
+            train_df, bil_returns, prog
         )
 
         all_signals_df = _stage_aggregate_oos(oos_raw_df, prog)
@@ -638,31 +751,51 @@ def main():
             all_signals_df, cfg.get("top_n", 50), cfg, prog
         )
 
-        symphony = _stage_build_symphony(top_n_specs, prog)
+        dl_cfg = cfg.get("dual_layer", {})
+        if dl_cfg.get("enabled"):
+            from src.orchestrator import run_dual_layer
+            symphony = run_dual_layer(
+                cfg=cfg,
+                train_df=train_df,
+                holdout_df=holdout_df,
+                signal_matrix=signal_matrix,
+                signal_names=signal_names,
+                signal_metadata=signal_metadata,
+                top_n_df=top_n_df,
+                top_n_specs=top_n_specs,
+                target_returns_dict=target_returns_dict,
+                bil_returns=bil_returns,
+                output_dir=run_dir,
+            )
+        else:
+            symphony = _stage_build_symphony(top_n_specs, prog)
 
         if insert_into:
             symphony = _stage_mode_c(
                 symphony, insert_into,
                 insert_mode=cfg.get("insert_mode", "leaf"),
                 top_n_specs=top_n_specs,
-                safe_asset=cfg.get("benchmark_ticker", "BIL"),
+                safe_asset=cfg.get("safe_asset_ticker", "BIL"),
                 prog=prog,
             )
 
         verify_results = _stage_verify_symphony(
-            symphony, signal_matrix, signal_names, price_df, prog
+            symphony, signal_matrix, signal_names, train_df, prog
         )
 
         if run_mc:
             _stage_monte_carlo(
                 cfg, top_n_df, signal_matrix, signal_names,
-                target_returns_dict, bil_returns, dates,
+                target_returns_dict, bil_returns, date_index,
                 run_dir, prog
             )
 
+        # Use date_index (train-aligned) not dates (full price history) —
+        # signal_matrix and returns are always computed on train_df only.
+        output_dates = date_index
         paths = _stage_write_output(
             cfg, all_signals_df, top_n_df, symphony,
-            signal_matrix, signal_names, target_returns_dict, bil_returns, dates,
+            signal_matrix, signal_names, target_returns_dict, bil_returns, output_dates,
             base_output_dir,
             combo_df if run_combos else None,
             prog,

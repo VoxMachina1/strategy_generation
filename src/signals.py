@@ -190,14 +190,13 @@ def generate_signal_specs(config: dict) -> list:
     One SignalSpec is created per (signal, target_ticker) pair.
 
     Config keys (all optional — missing keys produce no specs for that type):
-        signal_tickers  : list[str]  — LHS tickers
+        signal_tickers  : list[str]  — LHS and RHS tickers for all crossover signals
         target_tickers  : list[str]  — allocation tickers (cross-producted with signals)
         rsi_windows     : list[int]
         rsi_thresholds  : list[float]
         rsi_comparators : list[str]  e.g. ["lt", "gt"]
-        sma_windows     : list[int]
-        ema_windows     : list[int]
-        cross_tickers   : list[str]  — RHS tickers for indicator-vs-indicator signals
+        sma_windows     : list[int]  — period 1 == current price proxy
+        ema_windows     : list[int]  — period 1 == current price proxy
 
     Unit note — CumRet thresholds must be percentage-scale to match
     calculate_cumret() output (e.g. 5.0 means 5%, not 0.05). Using
@@ -210,7 +209,6 @@ def generate_signal_specs(config: dict) -> list:
     rsi_comparators = config.get("rsi_comparators", [])
     sma_windows = config.get("sma_windows", [])
     ema_windows = config.get("ema_windows", [])
-    cross_tickers = config.get("cross_tickers", [])
 
     specs = []
 
@@ -235,10 +233,12 @@ def generate_signal_specs(config: dict) -> list:
 
     # SMA cross signals (indicator vs indicator, gt only per PLANNING.md §2.3)
     for lhs_ticker, lhs_w, rhs_ticker, rhs_w, target in itertools.product(
-        signal_tickers, sma_windows, cross_tickers, sma_windows, target_tickers
+        signal_tickers, sma_windows, signal_tickers, sma_windows, target_tickers
     ):
         if lhs_ticker == rhs_ticker and lhs_w == rhs_w:
             continue  # self-comparison: always True, useless signal
+        if lhs_w == 1 and rhs_w == 1:
+            continue  # both sides = current price; compares dollar values, not levels
         name = make_signal_name(
             "SMA", lhs_w, lhs_ticker, "gt", "indicator",
             rhs_fn="SMA", rhs_window=rhs_w, rhs_ticker=rhs_ticker,
@@ -259,10 +259,12 @@ def generate_signal_specs(config: dict) -> list:
 
     # EMA cross signals (indicator vs indicator, gt only)
     for lhs_ticker, lhs_w, rhs_ticker, rhs_w, target in itertools.product(
-        signal_tickers, ema_windows, cross_tickers, ema_windows, target_tickers
+        signal_tickers, ema_windows, signal_tickers, ema_windows, target_tickers
     ):
         if lhs_ticker == rhs_ticker and lhs_w == rhs_w:
             continue  # self-comparison: always True, useless signal
+        if lhs_w == 1 and rhs_w == 1:
+            continue  # both sides = current price; compares dollar values, not levels
         name = make_signal_name(
             "EMA", lhs_w, lhs_ticker, "gt", "indicator",
             rhs_fn="EMA", rhs_window=rhs_w, rhs_ticker=rhs_ticker,
