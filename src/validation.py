@@ -14,6 +14,7 @@ aggregate_oos_results()          — reduce per-window results to per-signal sta
 compute_regime_stats()           — contiguous "on" block analysis per signal
 """
 
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -274,6 +275,18 @@ def run_validation(
 # 5.3 OOS aggregation
 # ---------------------------------------------------------------------------
 
+def _nanpercentile_quiet(values: np.ndarray, q: float) -> float:
+    """np.nanpercentile, but silent when the slice is all-NaN.
+
+    All-NaN happens when sortino/calmar were +inf for every OOS window in a
+    group (e.g. a defense signal that fires on very few days). NaN is the
+    correct output in that case; the RuntimeWarning is just noise.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        return float(np.nanpercentile(values, q))
+
+
 def aggregate_oos_results(results_df: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate per-window OOS results to one row per (signal_name, target).
@@ -336,8 +349,8 @@ def aggregate_oos_results(results_df: pd.DataFrame) -> pd.DataFrame:
             "Return_p50":       float(np.percentile(ret_vals, 50)),
             "Return_p10":       float(np.percentile(ret_vals, 10)),
             "MaxDD_p90":        float(np.percentile(dd_vals, 90)),
-            "Sortino_p50":      float(np.nanpercentile(sortino_vals, 50)),
-            "Calmar_p50":       float(np.nanpercentile(calmar_vals, 50)),
+            "Sortino_p50":      _nanpercentile_quiet(sortino_vals, 50),
+            "Calmar_p50":       _nanpercentile_quiet(calmar_vals, 50),
             "Consistency_Score": float((sharpe_vals > 0).mean()),
             "N_Iterations":     n,
         })
