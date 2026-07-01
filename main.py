@@ -1,5 +1,5 @@
-"""
-Composer Signal Pipeline — full pipeline entrypoint.
+﻿"""
+Composer Signal Pipeline â€” full pipeline entrypoint.
 
 Usage:
     python main.py [options]
@@ -48,7 +48,7 @@ class _Progress:
 # ---------------------------------------------------------------------------
 
 def _load_config(config_path: str | None) -> dict:
-    """Merge pipeline defaults → config.py → optional JSON file."""
+    """Merge pipeline defaults â†’ config.py â†’ optional JSON file."""
     from config import PIPELINE_CONFIG
 
     cfg = dict(PIPELINE_CONFIG)
@@ -120,7 +120,7 @@ def _stage_split_holdout(price_df: pd.DataFrame, cfg: dict) -> tuple:
     """
     Split price_df into (train_df, holdout_df) at the configured holdout_cutoff.
 
-    Returns (price_df, None) when dual_layer is disabled — the full dataset is
+    Returns (price_df, None) when dual_layer is disabled â€” the full dataset is
     used for training and no holdout evaluation is performed.
     """
     dl_cfg = cfg.get("dual_layer", {})
@@ -180,10 +180,10 @@ def _stage_generate_signal_matrix(
     )
     if signal_matrix.shape[1] == 0:
         print()
-        print("\nError: signal matrix is empty — no signals generated. Check config.")
+        print("\nError: signal matrix is empty â€” no signals generated. Check config.")
         sys.exit(1)
     prog.done()
-    print(f"       {signal_matrix.shape[1]:,} signals × {signal_matrix.shape[0]:,} days")
+    print(f"       {signal_matrix.shape[1]:,} signals Ã— {signal_matrix.shape[0]:,} days")
     return signal_matrix, signal_names, signal_metadata, date_index
 
 
@@ -192,7 +192,7 @@ def _stage_compute_returns(
 ) -> tuple:
     """Returns (target_returns_dict, bil_returns).
 
-    bil_returns is the safe-asset return series — what the strategy earns
+    bil_returns is the safe-asset return series â€” what the strategy earns
     when no signal is firing. It comes from safe_asset_ticker (e.g. BIL),
     NOT benchmark_ticker (e.g. SPY). Keeping these separate matters:
     benchmark_ticker is what performance is measured against; safe_asset_ticker
@@ -262,7 +262,7 @@ def _stage_run_combos(
     n_targets = len(target_returns_dict)
 
     prog.start(
-        f"Combos  (pool={pool_size} signals → {n_combos:,} combos × {n_targets} tickers"
+        f"Combos  (pool={pool_size} signals â†’ {n_combos:,} combos Ã— {n_targets} tickers"
         f" = {n_batches} batches)"
     )
 
@@ -328,7 +328,7 @@ def _stage_run_validation(
     n_targets = len(target_tickers)
     prog.start(
         f"OOS validation ({window_type})"
-        f"  {n_windows} windows × {n_targets} tickers = {n_windows * n_targets} backtests"
+        f"  {n_windows} windows Ã— {n_targets} tickers = {n_windows * n_targets} backtests"
     )
 
     _ticker_state: dict = {"current": "", "t0": 0.0}
@@ -422,7 +422,7 @@ def _stage_tail_metrics(
             tail_rows.append(entry)
             continue
 
-        # Active-day returns only — tail_metrics expects signal days, not the
+        # Active-day returns only â€” tail_metrics expects signal days, not the
         # full series. Including inactive days (zeros) destroys win rate stats.
         signal_col = signal_matrix[:, col_i]
         r = tr_moc[signal_col]
@@ -499,7 +499,7 @@ def _stage_mode_c(
     """Load an existing symphony JSON and insert top-N signals into it."""
     from src.composer import insert_into_symphony
 
-    prog.start(f"Mode C — inserting into {Path(insert_into).name} ({insert_mode})")
+    prog.start(f"Mode C â€” inserting into {Path(insert_into).name} ({insert_mode})")
     with open(insert_into) as f:
         existing = json.load(f)
     result = insert_into_symphony(existing, top_n_specs, mode=insert_mode,
@@ -509,7 +509,7 @@ def _stage_mode_c(
 
 
 def _mc_worker(args):
-    """Top-level function for process pool — must be importable at module level."""
+    """Top-level function for process pool â€” must be importable at module level."""
     from src.monte_carlo import run_mc_for_signal
     signal_col, tr_moc, bil_returns, dates, mc_dir, portfolio_name = args
     return run_mc_for_signal(
@@ -590,7 +590,7 @@ def _stage_verify_symphony(
     results = verify_composer_output(symphony, signal_matrix, signal_names, price_df)
 
     # Only warn about signals that ARE in the symphony but fail round-trip.
-    # match_rate=None means the signal wasn't selected into top-N — expected, not a warning.
+    # match_rate=None means the signal wasn't selected into top-N â€” expected, not a warning.
     failures = [name for name, r in results.items()
                 if r.get("warning") and r.get("match_rate") is not None]
     if failures:
@@ -600,7 +600,7 @@ def _stage_verify_symphony(
             print(f"    {name}: {rate:.1%}")
     else:
         n_verified = sum(1 for r in results.values() if r.get("match_rate") is not None)
-        print(f"  {n_verified} symphony signals verified ✓")
+        print(f"  {n_verified} symphony signals verified âœ“")
 
     prog.done()
     return results
@@ -653,7 +653,7 @@ def _stage_write_output(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Composer Signal Pipeline — run the full discovery pipeline"
+        description="Composer Signal Pipeline â€” run the full discovery pipeline"
     )
     p.add_argument("--config",       default=None,   help="Path to JSON config file")
     p.add_argument("--output",       default="output", help="Base output directory")
@@ -715,7 +715,7 @@ def main():
     try:
         price_df, dates = _stage_fetch_data(cfg, prog)
 
-        # Holdout split — train_df is used for all three passes.
+        # Holdout split â€” train_df is used for all three passes.
         # holdout_df is reserved for final validation after assembly.
         train_df, holdout_df = _stage_split_holdout(price_df, cfg)
 
@@ -790,7 +790,7 @@ def main():
                 run_dir, prog
             )
 
-        # Use date_index (train-aligned) not dates (full price history) —
+        # Use date_index (train-aligned) not dates (full price history) â€”
         # signal_matrix and returns are always computed on train_df only.
         output_dates = date_index
         paths = _stage_write_output(
