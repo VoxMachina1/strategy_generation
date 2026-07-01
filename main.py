@@ -1,5 +1,5 @@
-﻿"""
-Composer Signal Pipeline â€” full pipeline entrypoint.
+"""
+Composer Signal Pipeline — full pipeline entrypoint.
 
 Usage:
     python main.py [options]
@@ -48,7 +48,7 @@ class _Progress:
 # ---------------------------------------------------------------------------
 
 def _load_config(config_path: str | None) -> dict:
-    """Merge pipeline defaults â†’ config.py â†’ optional JSON file."""
+    """Merge pipeline defaults → config.py → optional JSON file."""
     from config import PIPELINE_CONFIG
 
     cfg = dict(PIPELINE_CONFIG)
@@ -120,7 +120,7 @@ def _stage_split_holdout(price_df: pd.DataFrame, cfg: dict) -> tuple:
     """
     Split price_df into (train_df, holdout_df) at the configured holdout_cutoff.
 
-    Returns (price_df, None) when dual_layer is disabled â€” the full dataset is
+    Returns (price_df, None) when dual_layer is disabled — the full dataset is
     used for training and no holdout evaluation is performed.
     """
     dl_cfg = cfg.get("dual_layer", {})
@@ -134,6 +134,86 @@ def _stage_split_holdout(price_df: pd.DataFrame, cfg: dict) -> tuple:
     print(f"  Holdout split: {len(train_df)} train days / {len(holdout_df)} holdout days"
           f" (cutoff {dl_cfg['holdout_cutoff']})")
     return train_df, holdout_df
+
+
+def _validation_window_count(n_days: int, cfg: dict) -> int:
+    """Number of OOS windows the configured validation scheme yields for n_days."""
+    from src.validation import (
+        generate_walk_forward_windows,
+        generate_expanding_windows,
+        generate_rolling_windows,
+    )
+    val = cfg.get("validation", {})
+    window_type = val.get("window_type", "walk_forward")
+    if window_type == "expanding":
+        return len(generate_expanding_windows(
+            n_days, val.get("initial_train", 756), val.get("test_size", 63)))
+    if window_type == "rolling":
+        return len(generate_rolling_windows(
+            n_days, val.get("train_size", 756), val.get("test_size", 63),
+            val.get("step", 63)))
+    return len(generate_walk_forward_windows(
+        n_days, val.get("train_size", 756), val.get("test_size", 63)))
+
+
+def _shortest_history_ticker(cfg: dict):
+    """Return (ticker, start_date, n_rows) for the universe ticker with the latest
+    start date — the binding constraint of the inner-joined price frame."""
+    from config import DATA_DIR
+    from src.data.alignment import load_ticker_csv
+
+    dl_cfg = cfg.get("dual_layer", {})
+    defense = dl_cfg.get("defensive_target_tickers", []) if dl_cfg.get("enabled") else []
+    extra = [cfg["benchmark_ticker"]]
+    if cfg.get("safe_asset_ticker"):
+        extra.append(cfg["safe_asset_ticker"])
+    universe = list(dict.fromkeys(
+        cfg["signal_tickers"] + cfg["target_tickers"] + defense + extra))
+
+    latest = None
+    for ticker in universe:
+        try:
+            df = load_ticker_csv(ticker, DATA_DIR)
+        except FileNotFoundError:
+            continue
+        start = df["date"].min()
+        if latest is None or start > latest[1]:
+            latest = (ticker, start, len(df))
+    return latest
+
+
+def _stage_check_feasibility(train_df: pd.DataFrame, cfg: dict) -> None:
+    """Fail fast with an actionable message when no OOS window can be generated.
+
+    The universe is inner-joined on date, so a single short-history ticker
+    (e.g. a recently-launched ETF) can shrink the training window below
+    validation.train_size, silently yielding zero windows and empty results.
+    """
+    n_days = len(train_df)
+    if _validation_window_count(n_days, cfg) > 0:
+        return
+
+    val = cfg.get("validation", {})
+    train_size = val.get("train_size", val.get("initial_train", "?"))
+    print("\nError: OOS validation cannot run - the training window is too short.")
+    print(f"  Training days available: {n_days}")
+    print(f"  Required (validation.train_size): {train_size}")
+    print("  Windows that can be generated: 0")
+
+    culprit = _shortest_history_ticker(cfg)
+    if culprit is not None:
+        ticker, start, n_rows = culprit
+        print(f"  Binding constraint: '{ticker}' has the shortest history "
+              f"(starts {start.date()}, {n_rows} rows). The universe is "
+              f"inner-joined on date, so it caps everyone.")
+
+    print("\n  Remedies (pick one):")
+    print("    - Lower validation.train_size / test_size in config.py so a window fits.")
+    print("    - Move dual_layer.holdout_cutoff earlier to leave more training data.")
+    print("    - Remove the short-history ticker(s) from the universe.")
+    print()
+    sys.exit(1)
+
 
 
 def _normalise_cfg_for_signals(cfg: dict) -> dict:
@@ -180,10 +260,10 @@ def _stage_generate_signal_matrix(
     )
     if signal_matrix.shape[1] == 0:
         print()
-        print("\nError: signal matrix is empty â€” no signals generated. Check config.")
+        print("\nError: signal matrix is empty — no signals generated. Check config.")
         sys.exit(1)
     prog.done()
-    print(f"       {signal_matrix.shape[1]:,} signals Ã— {signal_matrix.shape[0]:,} days")
+    print(f"       {signal_matrix.shape[1]:,} signals × {signal_matrix.shape[0]:,} days")
     return signal_matrix, signal_names, signal_metadata, date_index
 
 
@@ -192,7 +272,7 @@ def _stage_compute_returns(
 ) -> tuple:
     """Returns (target_returns_dict, bil_returns).
 
-    bil_returns is the safe-asset return series â€” what the strategy earns
+    bil_returns is the safe-asset return series — what the strategy earns
     when no signal is firing. It comes from safe_asset_ticker (e.g. BIL),
     NOT benchmark_ticker (e.g. SPY). Keeping these separate matters:
     benchmark_ticker is what performance is measured against; safe_asset_ticker
@@ -262,7 +342,7 @@ def _stage_run_combos(
     n_targets = len(target_returns_dict)
 
     prog.start(
-        f"Combos  (pool={pool_size} signals â†’ {n_combos:,} combos Ã— {n_targets} tickers"
+        f"Combos  (pool={pool_size} signals → {n_combos:,} combos × {n_targets} tickers"
         f" = {n_batches} batches)"
     )
 
@@ -328,7 +408,7 @@ def _stage_run_validation(
     n_targets = len(target_tickers)
     prog.start(
         f"OOS validation ({window_type})"
-        f"  {n_windows} windows Ã— {n_targets} tickers = {n_windows * n_targets} backtests"
+        f"  {n_windows} windows × {n_targets} tickers = {n_windows * n_targets} backtests"
     )
 
     _ticker_state: dict = {"current": "", "t0": 0.0}
@@ -422,7 +502,7 @@ def _stage_tail_metrics(
             tail_rows.append(entry)
             continue
 
-        # Active-day returns only â€” tail_metrics expects signal days, not the
+        # Active-day returns only — tail_metrics expects signal days, not the
         # full series. Including inactive days (zeros) destroys win rate stats.
         signal_col = signal_matrix[:, col_i]
         r = tr_moc[signal_col]
@@ -469,8 +549,10 @@ def _stage_select_top_n(
 ) -> tuple:
     prog.start(f"Selecting top {top_n} signals")
     filtered_df = _apply_quality_filters(all_signals_df, cfg)
-    sort_col = "Sharpe_p50" if "Sharpe_p50" in filtered_df.columns else filtered_df.columns[2]
-    top_n_df = filtered_df.sort_values(sort_col, ascending=False).head(top_n)
+    if filtered_df.empty or "Sharpe_p50" not in filtered_df.columns:
+        prog.done()
+        return filtered_df, []
+    top_n_df = filtered_df.sort_values("Sharpe_p50", ascending=False).head(top_n)
     top_n_specs = [
         {"signal_name": r.signal_name, "target_ticker": r.target}
         for r in top_n_df.itertuples()
@@ -499,7 +581,7 @@ def _stage_mode_c(
     """Load an existing symphony JSON and insert top-N signals into it."""
     from src.composer import insert_into_symphony
 
-    prog.start(f"Mode C â€” inserting into {Path(insert_into).name} ({insert_mode})")
+    prog.start(f"Mode C — inserting into {Path(insert_into).name} ({insert_mode})")
     with open(insert_into) as f:
         existing = json.load(f)
     result = insert_into_symphony(existing, top_n_specs, mode=insert_mode,
@@ -509,7 +591,7 @@ def _stage_mode_c(
 
 
 def _mc_worker(args):
-    """Top-level function for process pool â€” must be importable at module level."""
+    """Top-level function for process pool — must be importable at module level."""
     from src.monte_carlo import run_mc_for_signal
     signal_col, tr_moc, bil_returns, dates, mc_dir, portfolio_name = args
     return run_mc_for_signal(
@@ -590,7 +672,7 @@ def _stage_verify_symphony(
     results = verify_composer_output(symphony, signal_matrix, signal_names, price_df)
 
     # Only warn about signals that ARE in the symphony but fail round-trip.
-    # match_rate=None means the signal wasn't selected into top-N â€” expected, not a warning.
+    # match_rate=None means the signal wasn't selected into top-N — expected, not a warning.
     failures = [name for name, r in results.items()
                 if r.get("warning") and r.get("match_rate") is not None]
     if failures:
@@ -600,7 +682,7 @@ def _stage_verify_symphony(
             print(f"    {name}: {rate:.1%}")
     else:
         n_verified = sum(1 for r in results.values() if r.get("match_rate") is not None)
-        print(f"  {n_verified} symphony signals verified âœ“")
+        print(f"  {n_verified} symphony signals verified ✓")
 
     prog.done()
     return results
@@ -653,7 +735,7 @@ def _stage_write_output(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Composer Signal Pipeline â€” run the full discovery pipeline"
+        description="Composer Signal Pipeline — run the full discovery pipeline"
     )
     p.add_argument("--config",       default=None,   help="Path to JSON config file")
     p.add_argument("--output",       default="output", help="Base output directory")
@@ -715,9 +797,11 @@ def main():
     try:
         price_df, dates = _stage_fetch_data(cfg, prog)
 
-        # Holdout split â€” train_df is used for all three passes.
+        # Holdout split — train_df is used for all three passes.
         # holdout_df is reserved for final validation after assembly.
         train_df, holdout_df = _stage_split_holdout(price_df, cfg)
+
+        _stage_check_feasibility(train_df, cfg)
 
         indicator_cache = _stage_build_indicator_cache(cfg, train_df, prog)
 
@@ -790,7 +874,7 @@ def main():
                 run_dir, prog
             )
 
-        # Use date_index (train-aligned) not dates (full price history) â€”
+        # Use date_index (train-aligned) not dates (full price history) —
         # signal_matrix and returns are always computed on train_df only.
         output_dates = date_index
         paths = _stage_write_output(

@@ -1,12 +1,12 @@
-﻿"""
+"""
 Central configuration for the Composer Signal Pipeline.
 
 Edit this file before running any entry point. All three entry points read
 from PIPELINE_CONFIG:
 
-    python main.py              â€” full discovery pipeline
-    python rsi_search.py        â€” fast RSI parameter sweep
-    python analysis_workshop.py â€” interactive filter/sort CLI
+    python main.py              — full discovery pipeline
+    python rsi_search.py        — fast RSI parameter sweep
+    python analysis_workshop.py — interactive filter/sort CLI
 
 CLI flags override the values here for a single run. To make a change
 permanent, edit this file.
@@ -42,7 +42,7 @@ DATA_DIR = PROJECT_ROOT / "data" / "prices"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 # ---------------------------------------------------------------------------
-# Main config â€” edit this before running
+# Main config — edit this before running
 # ---------------------------------------------------------------------------
 
 PIPELINE_CONFIG = {
@@ -85,29 +85,29 @@ PIPELINE_CONFIG = {
     # Tickers to hold WHEN a signal fires (the true branch of each if-block).
     # The pipeline runs a separate signal search for each ticker independently,
     # so including multiple targets generates signals for each in parallel.
-    # Do NOT include safe_asset_ticker here â€” the else branch already holds it,
+    # Do NOT include safe_asset_ticker here — the else branch already holds it,
     # and including it inflates Sharpe (near-zero volatility in the denominator).
     #
-    # Example â€” leveraged Nasdaq trades in both directions:
+    # Example — leveraged Nasdaq trades in both directions:
     #   ["TQQQ", "SQQQ"] finds signals predicting up-moves in each independently.
     #   This is NOT a risk-on/risk-off setup; it is two separate signal searches.
     #
-    # Example â€” risk-on / risk-off for the Nasdaq:
+    # Example — risk-on / risk-off for the Nasdaq:
     #   ["QQQ"] with safe_asset_ticker="BIL" and benchmark_ticker="SPY"
     #   asks "when should I be in QQQ vs cash, and does that beat the market?"
     #
-    # Example â€” high-probability volatility trade:
+    # Example — high-probability volatility trade:
     #   ["UVIX"] finds signals that predict volatility spikes (UVIX up-moves).
     "target_tickers": ["UVIX"],
     # What the strategy holds when NO signal is firing (the "else" branch).
-    # This is the cash/safe-asset position â€” typically BIL or a short-duration
+    # This is the cash/safe-asset position — typically BIL or a short-duration
     # bond fund. It is NOT the same as benchmark_ticker (see below).
     "safe_asset_ticker": "QQQ",
     # What strategy performance is MEASURED AGAINST for Sharpe and other
-    # relative metrics. Does not affect what the strategy holds â€” only affects
+    # relative metrics. Does not affect what the strategy holds — only affects
     # how results are evaluated. Set to SPY to ask "did this beat the market?"
     #
-    # It is valid â€” and often correct â€” for safe_asset_ticker and
+    # It is valid — and often correct — for safe_asset_ticker and
     # benchmark_ticker to be the same ticker. If the null hypothesis is
     # "I would otherwise be holding QQQ," set both to "QQQ" so the pipeline
     # measures whether signals beat that baseline.
@@ -115,28 +115,28 @@ PIPELINE_CONFIG = {
     # -----------------------------------------------------------------------
     # RSI signals
     # The pipeline generates one signal per combination of
-    # (signal_ticker Ã— rsi_window Ã— rsi_threshold Ã— comparator Ã— target_ticker).
+    # (signal_ticker × rsi_window × rsi_threshold × comparator × target_ticker).
     # -----------------------------------------------------------------------
     "rsi_windows": [5, 10, 15, 20],
     # RSI threshold levels to sweep. Must match the scale output by
-    # calculate_rsi() â€” i.e. 0â€“100, not 0â€“1.
+    # calculate_rsi() — i.e. 0–100, not 0–1.
     "rsi_thresholds": [20, 25, 30, 40, 50, 60, 70, 80, 82, 84, 86, 88, 90],
-    # "lt" â†’ RSI < threshold (oversold / re-entry signals)
-    # "gt" â†’ RSI > threshold (momentum / overbought signals)
+    # "lt" → RSI < threshold (oversold / re-entry signals)
+    # "gt" → RSI > threshold (momentum / overbought signals)
     "comparators": ["lt", "gt"],
     # -----------------------------------------------------------------------
     # Moving average crossover signals
     # Each combination of (lhs_ticker, lhs_window, rhs_ticker, rhs_window)
     # produces one signal: lhs_MA > rhs_MA. SMA(1) = current price, so
     # SMA_1_SPY_GT_SMA_200_SPY means "SPY price above its 200-day MA."
-    # Both sides draw from signal_tickers â€” no separate cross_tickers needed.
+    # Both sides draw from signal_tickers — no separate cross_tickers needed.
     # -----------------------------------------------------------------------
     "sma_windows": [1, 20, 50, 200],
     "ema_windows": [1, 12, 26, 50],
     # -----------------------------------------------------------------------
     # Experimental signals (main.py only)
     # MACD and Bollinger Band signals are not yet supported by Composer.
-    # Set to True only for local research â€” never export experimental signals
+    # Set to True only for local research — never export experimental signals
     # to a symphony intended for live trading.
     # -----------------------------------------------------------------------
     "experimental_signals": False,
@@ -168,9 +168,9 @@ PIPELINE_CONFIG = {
     # Controls how out-of-sample windows are constructed.
     # -----------------------------------------------------------------------
     "validation": {
-        # "walk_forward" â€” fixed-length train, non-overlapping test windows (default)
-        # "expanding"    â€” growing train window, fixed-length test windows
-        # "rolling"      â€” fixed-length train, fixed-length test, sliding step
+        # "walk_forward" — fixed-length train, non-overlapping test windows (default)
+        # "expanding"    — growing train window, fixed-length test windows
+        # "rolling"      — fixed-length train, fixed-length test, sliding step
         "window_type": "walk_forward",
         # Number of trading days in each training window (~3 years = 756)
         "train_size": 756,
@@ -184,7 +184,7 @@ PIPELINE_CONFIG = {
     "top_n": 50,
     # -----------------------------------------------------------------------
     # Top-N quality filters
-    # Applied before ranking â€” signals that fail any threshold are excluded
+    # Applied before ranking — signals that fail any threshold are excluded
     # from the report entirely, regardless of Sharpe.
     # -----------------------------------------------------------------------
     # Win rate after removing tail events. Filters out lottery-ticket signals
@@ -204,7 +204,7 @@ PIPELINE_CONFIG = {
     # Disabling cuts runtime significantly on large universes.
     "run_combos": True,
     # Cap on the number of signals considered for combo pairing.
-    # Keeps C(K,2)Ã—4 tractable. This is NOT a quality filter â€” quality
+    # Keeps C(K,2)×4 tractable. This is NOT a quality filter — quality
     # gates are applied to combo results after the fact.
     "top_k_for_combos": 50,
     # Number of combo columns processed per batch. Lower values use less
@@ -222,7 +222,7 @@ PIPELINE_CONFIG = {
     # See VISION.md "Dual-layer 3-pass architecture" for design rationale.
     # -----------------------------------------------------------------------
     "dual_layer": {
-        # Master switch â€” False means only Pass 1 (standard pipeline) runs.
+        # Master switch — False means only Pass 1 (standard pipeline) runs.
         "enabled": True,
         # Assets the pipeline searches for defense signals (Pass 2) and
         # else-state assets (Pass 3). May overlap with target_tickers.
@@ -242,6 +242,6 @@ PIPELINE_CONFIG = {
 }
 
 # ---------------------------------------------------------------------------
-# Backwards-compatibility alias â€” rsi_search.py imports RSI_SEARCH_CONFIG
+# Backwards-compatibility alias — rsi_search.py imports RSI_SEARCH_CONFIG
 # ---------------------------------------------------------------------------
 RSI_SEARCH_CONFIG = PIPELINE_CONFIG
