@@ -97,8 +97,8 @@ PIPELINE_CONFIG = {
     #   asks "when should I be in QQQ vs cash, and does that beat the market?"
     #
     # Example — high-probability volatility trade:
-    #   ["UVIX"] finds signals that predict volatility spikes (UVIX up-moves).
-    "target_tickers": ["UVIX"],
+    #   ["UVXY"] finds signals that predict volatility spikes (UVXY up-moves).
+    "target_tickers": ["UVXY"],
     # What the strategy holds when NO signal is firing (the "else" branch).
     # This is the cash/safe-asset position — typically BIL or a short-duration
     # bond fund. It is NOT the same as benchmark_ticker (see below).
@@ -111,7 +111,7 @@ PIPELINE_CONFIG = {
     # benchmark_ticker to be the same ticker. If the null hypothesis is
     # "I would otherwise be holding QQQ," set both to "QQQ" so the pipeline
     # measures whether signals beat that baseline.
-    "benchmark_ticker": "QQQ",
+    "benchmark_ticker": "qqq",
     # -----------------------------------------------------------------------
     # RSI signals
     # The pipeline generates one signal per combination of
@@ -210,6 +210,15 @@ PIPELINE_CONFIG = {
     # Number of combo columns processed per batch. Lower values use less
     # peak memory; higher values are faster. 500 is a safe default.
     "combo_batch_size": 500,
+    # Write a standalone Composer symphony JSON for every (signal, target)
+    # and (combo, target) row -- the FULL unfiltered universe, not just
+    # top-N. Top-N depends on quality thresholds tuned for the report;
+    # for ad-hoc inspection of the raw dataset (e.g. hunting a specific
+    # regime signal by hand) that filtering is actively unhelpful.
+    # Expensive: with the default universe this is tens of thousands of
+    # small files and adds real wall-clock time to every run. Default off.
+    # Files land in output/{timestamp}/composer_json/{name}__{target}.json.
+    "export_individual_json": False,
     # Whether to run Monte Carlo walk-forward simulation for top-N signals.
     # Disabling cuts runtime by several minutes on large top-N values.
     "run_mc": True,

@@ -8,12 +8,16 @@ Writes all artifacts to output/{run_timestamp}/:
   rsi_search.csv       — RSI search results (optional)
   symphony.json        — copy-paste ready Composer JSON
   report.html          — self-contained sortable HTML dashboard
+  composer_json/       — one standalone symphony JSON per (signal, target)
+                          and (combo, target) row, full unfiltered universe
+                          (optional, see write_individual_json())
 
 Public API
 ----------
 write_output()  — write all artifacts for a completed pipeline run
 write_csvs()    — write CSV files only
 write_symphony_json() — write symphony.json only
+write_individual_json() — write one symphony JSON per signal/combo row
 write_report_html()   — write report.html only
 """
 
@@ -97,6 +101,70 @@ def write_symphony_json(output_dir: Path, symphony_dict: dict) -> str:
     with open(p, "w", encoding="utf-8") as f:
         json.dump(symphony_dict, f, indent=2)
     return str(p)
+
+
+def write_individual_json(
+    output_dir: Path,
+    all_signals_df: pd.DataFrame | None,
+    all_combos_df: pd.DataFrame | None,
+    safe_asset: str,
+    progress_fn=None,
+) -> str | None:
+    """
+    Write one standalone Composer symphony JSON per (signal, target) row in
+    all_signals_df and per (combo, target) row in all_combos_df.
+
+    Unlike symphony.json (top-N only), this covers the FULL unfiltered
+    universe -- every signal/combo the pipeline evaluated, regardless of
+    whether it passed the quality filters. Each file is a complete,
+    independently pasteable Composer symphony (same shape as symphony.json,
+    scoped to a single signal/combo) so any one of them can be copied
+    straight into Composer without reconstruction.
+
+    Parameters
+    ----------
+    output_dir     : run directory (e.g. output/{timestamp}/); files are
+                      written to output_dir/composer_json/
+    all_signals_df : every base signal, must have signal_name + target columns
+    all_combos_df  : every combo result, must have name + target columns
+                      (None or empty is fine -- combos are skipped)
+    safe_asset     : else-branch ticker for each single-item symphony
+    progress_fn    : optional callable(done: int, total: int), called
+                      periodically as files are written
+
+    Returns
+    -------
+    Absolute path to the composer_json/ directory, or None if there was
+    nothing to write.
+    """
+    from src.composer import build_symphony
+
+    items = []
+    if all_signals_df is not None and not all_signals_df.empty:
+        items.extend(
+            all_signals_df[["signal_name", "target"]].itertuples(index=False, name=None)
+        )
+    if all_combos_df is not None and not all_combos_df.empty:
+        items.extend(
+            all_combos_df[["name", "target"]].itertuples(index=False, name=None)
+        )
+
+    if not items:
+        return None
+
+    out_dir = Path(output_dir) / "composer_json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    total = len(items)
+    for idx, (name, target) in enumerate(items, start=1):
+        symphony = build_symphony([{"signal_name": name, "target_ticker": target}], safe_asset)
+        fname = f"{name}__{target}.json"
+        with open(out_dir / fname, "w", encoding="utf-8") as f:
+            json.dump(symphony, f, indent=2)
+        if progress_fn is not None and (idx % 250 == 0 or idx == total):
+            progress_fn(idx, total)
+
+    return str(out_dir)
 
 
 # ---------------------------------------------------------------------------

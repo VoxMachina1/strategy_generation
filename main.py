@@ -729,6 +729,40 @@ def _stage_write_output(
     return paths
 
 
+def _stage_export_individual_json(
+    cfg: dict,
+    all_signals_df: pd.DataFrame,
+    combo_df: pd.DataFrame | None,
+    run_dir: Path,
+    prog: _Progress,
+) -> None:
+    """
+    Write one standalone Composer symphony JSON per signal/combo row --
+    the full unfiltered universe, not just top-N. Opt-in via
+    cfg["export_individual_json"] because of the volume involved.
+    """
+    from src.output import write_individual_json
+
+    n_signals = len(all_signals_df) if all_signals_df is not None else 0
+    n_combos  = len(combo_df) if combo_df is not None and not combo_df.empty else 0
+    total = n_signals + n_combos
+
+    prog.start(f"Exporting per-signal Composer JSON ({total:,} files)")
+
+    def _export_progress(done: int, tot: int):
+        print(f"\r       {done:,}/{tot:,} files written   ", end="", flush=True)
+
+    safe_asset = cfg.get("safe_asset_ticker", "BIL")
+    out_dir = write_individual_json(
+        run_dir, all_signals_df, combo_df, safe_asset, progress_fn=_export_progress
+    )
+    if total:
+        print()  # newline after the \r progress line
+    prog.done()
+    if out_dir:
+        print(f"       {total:,} files written to {out_dir}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -785,6 +819,10 @@ def main():
     if run_mc:
         n_stages += 1
     if insert_into:
+        n_stages += 1
+
+    export_individual_json = cfg.get("export_individual_json", False)
+    if export_individual_json:
         n_stages += 1
 
     prog = _Progress(n_stages)
@@ -885,6 +923,14 @@ def main():
             prog,
             run_timestamp=run_timestamp,
         )
+
+        if export_individual_json:
+            actual_run_dir = Path(paths["symphony_json"]).parent
+            _stage_export_individual_json(
+                cfg, all_signals_df,
+                combo_df if run_combos else None,
+                actual_run_dir, prog,
+            )
 
         print("\n=== Pipeline complete ===")
         for name, path in paths.items():
